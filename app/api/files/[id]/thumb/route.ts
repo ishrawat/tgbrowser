@@ -3,16 +3,14 @@ import { sql } from '@/lib/db';
 export async function GET(_: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
 
-  const rows = (await sql`SELECT file_id, mime_type FROM files WHERE id = ${id}`) as any[];
+  const rows = (await sql`SELECT file_id, thumb_file_id FROM files WHERE id = ${id}`) as any[];
   if (rows.length === 0) return new Response('not found', { status: 404 });
 
   const file = rows[0];
-  if (!file.mime_type.startsWith('image/')) {
-    return new Response('not an image', { status: 400 });
-  }
+  const useId = file.thumb_file_id || file.file_id;
 
   const tgRes = await fetch(
-    `https://api.telegram.org/bot${process.env.BOT_TOKEN}/getFile?file_id=${file.file_id}`
+    `https://api.telegram.org/bot${process.env.BOT_TOKEN}/getFile?file_id=${useId}`
   );
   const data = await tgRes.json();
   if (!data.ok) return new Response('telegram error', { status: 502 });
@@ -24,7 +22,7 @@ export async function GET(_: Request, { params }: { params: Promise<{ id: string
 
   return new Response(fileRes.body, {
     headers: {
-      'Content-Type': file.mime_type,
+      'Content-Type': 'image/jpeg',
       'Cache-Control': 'public, max-age=86400',
     },
   });

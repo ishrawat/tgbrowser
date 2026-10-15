@@ -14,7 +14,7 @@ export async function POST(req: Request) {
   const photo = msg.photo ? msg.photo[msg.photo.length - 1] : null;
 
   let fileId: string, fileUniqueId: string, filename: string,
-      mimeType: string, size: number;
+      mimeType: string, size: number, thumbFileId: string | null = null;
 
   if (doc) {
     const ok = doc.mime_type?.startsWith('image/') || doc.mime_type === 'application/pdf';
@@ -25,12 +25,14 @@ export async function POST(req: Request) {
     filename = doc.file_name || `file_${msg.message_id}`;
     mimeType = doc.mime_type;
     size = doc.file_size;
+    thumbFileId = doc.thumbnail?.file_id ?? null;
   } else if (photo) {
     fileId = photo.file_id;
     fileUniqueId = photo.file_unique_id;
     filename = `photo_${msg.message_id}.jpg`;
     mimeType = 'image/jpeg';
     size = photo.file_size;
+    thumbFileId = msg.photo[0].file_id;
   } else {
     return new Response('ok');
   }
@@ -38,9 +40,9 @@ export async function POST(req: Request) {
   if (size > 20 * 1024 * 1024) return new Response('ok');
 
   await sql`
-    INSERT INTO files (file_id, file_unique_id, message_id, filename, mime_type, size_bytes, caption, sender_name, telegram_date)
+    INSERT INTO files (file_id, file_unique_id, message_id, filename, mime_type, size_bytes, caption, sender_name, telegram_date, thumb_file_id)
     VALUES (${fileId}, ${fileUniqueId}, ${msg.message_id}, ${filename}, ${mimeType}, ${size},
-            ${msg.caption ?? null}, ${msg.from?.first_name ?? null}, to_timestamp(${msg.date}))
+            ${msg.caption ?? null}, ${msg.from?.first_name ?? null}, to_timestamp(${msg.date}), ${thumbFileId})
     ON CONFLICT (file_unique_id) DO NOTHING
   `;
 
