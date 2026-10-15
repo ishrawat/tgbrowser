@@ -78,9 +78,16 @@ export default function Home() {
               onClick={() => open(f)}
               className="bg-gray-900 border border-gray-800 rounded-lg p-3 text-left hover:border-blue-500 transition"
             >
-              <div className="text-3xl mb-2">
-                {f.mime_type.startsWith('image/') ? '🖼' : '📄'}
-              </div>
+              {f.mime_type.startsWith('image/') ? (
+  <img
+    src={`/api/files/${f.id}/thumb`}
+    alt={f.filename}
+    className="w-full h-32 object-cover rounded mb-2 bg-gray-800"
+    loading="lazy"
+  />
+) : (
+  <div className="text-3xl mb-2">📄</div>
+)}
               <div className="text-sm truncate">{f.filename}</div>
               <div className="text-xs text-gray-500 mt-1">
                 {(f.size_bytes / 1024).toFixed(0)} KB
