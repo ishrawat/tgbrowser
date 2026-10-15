@@ -1,69 +1,132 @@
-import Image from "next/image";
+'use client';
+import { useEffect, useState } from 'react';
+
+type File = {
+  id: number;
+  filename: string;
+  mime_type: string;
+  size_bytes: number;
+  telegram_date: string;
+};
 
 export default function Home() {
+  const [files, setFiles] = useState<File[]>([]);
+  const [q, setQ] = useState('');
+  const [type, setType] = useState('');
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [preview, setPreview] = useState<{ url: string; mime: string; name: string } | null>(null);
+
+  async function load(reset = false) {
+    setLoading(true);
+    const p = reset ? 1 : page;
+    const res = await fetch(`/api/files?page=${p}&q=${encodeURIComponent(q)}&type=${type}`);
+    const data = await res.json();
+    setFiles(reset ? data.files : [...files, ...data.files]);
+    setHasMore(data.hasMore);
+    setPage(p + 1);
+    setLoading(false);
+  }
+
+  useEffect(() => { load(true); }, [q, type]);
+
+  async function open(f: File) {
+    const res = await fetch(`/api/files/${f.id}/url`);
+    if (!res.ok) {
+      alert('Cannot load file (may exceed 20 MB)');
+      return;
+    }
+    const { url } = await res.json();
+    setPreview({ url, mime: f.mime_type, name: f.filename });
+  }
+
+  async function logout() {
+    document.cookie = 'auth=; Max-Age=0; path=/';
+    window.location.href = '/login';
+  }
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+    <div className="min-h-screen bg-gray-950 text-white p-6">
+      <div className="max-w-6xl mx-auto">
+        <div className="flex justify-between items-center mb-4">
+          <h1 className="text-2xl font-semibold">My Vault</h1>
+          <button onClick={logout} className="text-sm text-gray-400 hover:text-white">
+            Logout
+          </button>
+        </div>
+
+        <div className="flex gap-3 mb-6">
+          <input
+            value={q}
+            onChange={e => setQ(e.target.value)}
+            placeholder="Search..."
+            className="flex-1 p-2 rounded bg-gray-900 border border-gray-800"
+          />
+          <select value={type} onChange={e => setType(e.target.value)}
+                  className="p-2 rounded bg-gray-900 border border-gray-800">
+            <option value="">All</option>
+            <option value="image">Images</option>
+            <option value="pdf">PDFs</option>
+          </select>
+        </div>
+
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3">
+          {files.map(f => (
+            <button
+              key={f.id}
+              onClick={() => open(f)}
+              className="bg-gray-900 border border-gray-800 rounded-lg p-3 text-left hover:border-blue-500 transition"
             >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+              <div className="text-3xl mb-2">
+                {f.mime_type.startsWith('image/') ? '🖼' : '📄'}
+              </div>
+              <div className="text-sm truncate">{f.filename}</div>
+              <div className="text-xs text-gray-500 mt-1">
+                {(f.size_bytes / 1024).toFixed(0)} KB
+              </div>
+            </button>
+          ))}
+        </div>
+
+        {hasMore && (
+          <button
+            onClick={() => load()}
+            disabled={loading}
+            className="mt-6 px-4 py-2 bg-blue-600 rounded hover:bg-blue-500 disabled:opacity-50"
+          >
+            {loading ? 'Loading...' : 'Load more'}
+          </button>
+        )}
+
+        {files.length === 0 && !loading && (
+          <p className="text-gray-500 text-center mt-12">
+            No files yet. Post an image or PDF in your Telegram group.
           </p>
+        )}
+      </div>
+
+      {preview && (
+        <div
+          onClick={() => setPreview(null)}
+          className="fixed inset-0 bg-black/90 flex items-center justify-center p-4 z-50"
+        >
+          <div onClick={e => e.stopPropagation()} className="max-w-4xl max-h-full">
+            {preview.mime.startsWith('image/') ? (
+              <img src={preview.url} alt={preview.name} className="max-h-[90vh] rounded" />
+            ) : (
+              <iframe src={preview.url} className="w-[80vw] h-[90vh] bg-white rounded" />
+            )}
+            <div className="flex justify-between items-center mt-3">
+              <span className="text-sm text-gray-400">{preview.name}</span>
+              <a href={preview.url} download={preview.name}
+                 className="text-sm text-blue-400 hover:underline">
+                Download
+              </a>
+            </div>
+          </div>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
+      )}
     </div>
   );
 }
