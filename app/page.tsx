@@ -28,16 +28,14 @@ type Stats = {
   starred: number;
 };
 
-type DupGroup = {
-  size_bytes: number;
-  count: number;
-  files: File[];
-};
-
+type DupGroup = { size_bytes: number; count: number; files: File[] };
 type RuleType = '' | 'image' | 'video' | 'pdf';
 type ViewMode = 'grid' | 'list';
 type Menu = { x: number; y: number; file: File };
 type PageView = 'files' | 'duplicates';
+type PaletteItem =
+  | { kind: 'file'; file: File }
+  | { kind: 'action'; label: string; hint?: string; run: () => void };
 
 const SORTS = [
   { value: 'date_desc', label: 'Newest first' },
@@ -74,6 +72,19 @@ function groupByDate(files: File[]) {
   return Object.entries(buckets).filter(([, fs]) => fs.length > 0).map(([label, fs]) => ({ label, files: fs }));
 }
 
+function fuzzyScore(text: string, q: string) {
+  text = text.toLowerCase(); q = q.toLowerCase();
+  if (!q) return 1;
+  let ti = 0, score = 0;
+  for (const c of q) {
+    const idx = text.indexOf(c, ti);
+    if (idx === -1) return 0;
+    score += idx === ti ? 3 : 1;
+    ti = idx + 1;
+  }
+  return score;
+}
+
 export default function Home() {
   const [files, setFiles] = useState<File[]>([]);
   const [collections, setCollections] = useState<Collection[]>([]);
@@ -106,8 +117,13 @@ export default function Home() {
   const [extracting, setExtracting] = useState(false);
   const [extractProgress, setExtractProgress] = useState('');
   const [mounted, setMounted] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paletteQ, setPaletteQ] = useState('');
+  const [paletteIdx, setPaletteIdx] = useState(0);
   const longPressRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const paletteRef = useRef<HTMLInputElement>(null);
+  const gridRef = useRef<HTMLDivElement>(null);
 
   const [newName, setNewName] = useState('');
   const [isSmart, setIsSmart] = useState(false);
@@ -136,7 +152,17 @@ export default function Home() {
     const h = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
       const inInput = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+
+      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+        e.preventDefault();
+        setPaletteOpen(true);
+        setPaletteQ('');
+        setPaletteIdx(0);
+        return;
+      }
+
       if (e.key === 'Escape') {
+        if (paletteOpen) { setPaletteOpen(false); return; }
         if (menu) { setMenu(null); setMenuSub(false); setMenuMoveSub(false); return; }
         if (renaming) { setRenaming(false); return; }
         if (preview) { setPreview(null); return; }
@@ -144,6 +170,13 @@ export default function Home() {
         if (sidebarOpen) { setSidebarOpen(false); return; }
         return;
       }
+
+      if (paletteOpen) {
+        if (e.key === 'ArrowDown') { e.preventDefault(); setPaletteIdx(i => i + 1); }
+        if (e.key === 'ArrowUp') { e.preventDefault(); setPaletteIdx(i => Math.max(0, i - 1)); }
+        return;
+      }
+
       if (e.key === '/' && !inInput) { e.preventDefault(); searchRef.current?.focus(); return; }
       if (preview && !inInput) {
         if (e.key === 'ArrowRight') { e.preventDefault(); navigatePreview(1); }
@@ -152,7 +185,7 @@ export default function Home() {
     };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
-  }, [preview, renaming, selected, menu, sidebarOpen, files]);
+  }, [preview, renaming, selected, menu, sidebarOpen, files, paletteOpen]);
 
   useEffect(() => {
     const close = () => { setMenu(null); setMenuSub(false); setMenuMoveSub(false); };
@@ -194,10 +227,7 @@ export default function Home() {
 
   useEffect(() => { load(true); }, [debouncedQ, type, activeCollection, sort, showStarred, searchContent]);
   useEffect(() => { loadCollections(); loadStats(); }, []);
-
-  useEffect(() => {
-    if (view === 'duplicates') loadDuplicates();
-  }, [view]);
+  useEffect(() => { if (view === 'duplicates') loadDuplicates(); }, [view]);
 
   function addToRecent(f: File) {
     const next = [f, ...recent.filter(r => r.id !== f.id)].slice(0, 8);
@@ -307,6 +337,19 @@ export default function Home() {
     catch { prompt('Copy this link:', url); }
   }
 
+  async function createShareLink(f: File) {
+    const res = await fetch(`/api/files/${f.id}/share`, { method: 'POST' });
+    if (!res.ok) { alert('Could not create share link'); return; }
+    const { token } = await res.json();
+    const url = `${window.location.origin}/s/${token}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      alert(`Public link copied:\n${url}\n\nAnyone with this link can view the file.`);
+    } catch {
+      prompt('Copy this share link:', url);
+    }
+  }
+
   async function addFileToCollection(f: File, collectionId: number) {
     await fetch('/api/collections/bulk-add', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -343,6 +386,53 @@ export default function Home() {
   }
   function handleTouchEnd() {
     if (longPressRef.current) { clearTimeout(longPressRef.current); longPressRef.current = null; }
+  }
+
+  function handleGridMouseDown(e: React.MouseEvent) {
+    if (e.button !== 0) return;
+    if ((e.target as HTMLElement).closest('[data-file-id]')) return;
+    if (!gridRef.current) return;
+
+    const startX = e.clientX, startY = e.clientY;
+    const rect = document.createElement('div');
+    rect.style.cssText = 'position:fixed;border:1px solid #3b82f6;background:rgba(59,130,246,0.15);pointer-events:none;z-index:30;';
+    document.body.appendChild(rect);
+
+    const onMove = (ev: MouseEvent) => {
+      const x = Math.min(startX, ev.clientX);
+      const y = Math.min(startY, ev.clientY);
+      const w = Math.abs(ev.clientX - startX);
+      const h = Math.abs(ev.clientY - startY);
+      rect.style.left = x + 'px'; rect.style.top = y + 'px';
+      rect.style.width = w + 'px'; rect.style.height = h + 'px';
+    };
+
+    const onUp = (ev: MouseEvent) => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      rect.remove();
+
+      const sel = {
+        left: Math.min(startX, ev.clientX),
+        top: Math.min(startY, ev.clientY),
+        right: Math.max(startX, ev.clientX),
+        bottom: Math.max(startY, ev.clientY),
+      };
+
+      if (sel.right - sel.left < 5 && sel.bottom - sel.top < 5) return;
+
+      const cards = gridRef.current?.querySelectorAll('[data-file-id]');
+      const next = new Set(selected);
+      cards?.forEach(card => {
+        const r = card.getBoundingClientRect();
+        const overlap = !(r.right < sel.left || r.left > sel.right || r.bottom < sel.top || r.top > sel.bottom);
+        if (overlap) next.add(Number(card.getAttribute('data-file-id')));
+      });
+      setSelected(next);
+    };
+
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
   }
 
   function resetForm() {
@@ -387,26 +477,20 @@ export default function Home() {
   }
 
   async function extractAllPdfs() {
-    if (!confirm('Extract text from all PDFs? This makes them searchable. May take a while for many PDFs.')) return;
+    if (!confirm('Extract text from all PDFs?')) return;
     setExtracting(true);
     setExtractProgress('Loading list...');
     try {
       const res = await fetch('/api/files/pending-extract');
       const pending = await res.json();
-      if (pending.length === 0) {
-        alert('All PDFs are already extracted.');
-        setExtracting(false); setExtractProgress(''); return;
-      }
+      if (pending.length === 0) { alert('All PDFs already extracted.'); return; }
       let done = 0, failed = 0;
       for (const f of pending) {
         setExtractProgress(`Extracting ${done + failed + 1} / ${pending.length}...`);
         const r = await fetch(`/api/files/${f.id}/extract`, { method: 'POST' });
-        if (r.ok) done++;
-        else failed++;
+        if (r.ok) done++; else failed++;
       }
       alert(`Done. Extracted: ${done}. Failed: ${failed}.`);
-    } catch (e) {
-      alert('Extraction failed');
     } finally {
       setExtracting(false); setExtractProgress('');
     }
@@ -426,21 +510,61 @@ export default function Home() {
   const canPrev = previewIndex > 0;
   const canNext = previewIndex >= 0 && previewIndex < files.length - 1;
 
-  const title = view === 'duplicates'
-    ? '🔁 Duplicates'
-    : showStarred
-      ? '⭐ Starred'
-      : activeData ? activeData.name : 'All Files';
+  const title = view === 'duplicates' ? '🔁 Duplicates' : showStarred ? '⭐ Starred' : activeData ? activeData.name : 'All Files';
+
+  const paletteItems: PaletteItem[] = useMemo(() => {
+    if (!paletteOpen) return [];
+    const actions: PaletteItem[] = [
+      { kind: 'action', label: 'Toggle grid / list view', hint: 'view', run: () => { setViewMode(viewMode === 'grid' ? 'list' : 'grid'); setPaletteOpen(false); } },
+      { kind: 'action', label: 'Sort: Newest first', run: () => { setSort('date_desc'); setPaletteOpen(false); } },
+      { kind: 'action', label: 'Sort: Name A–Z', run: () => { setSort('name_asc'); setPaletteOpen(false); } },
+      { kind: 'action', label: 'Show All Files', run: () => { setView('files'); setActiveCollection(null); setShowStarred(false); setPaletteOpen(false); } },
+      { kind: 'action', label: 'Show Starred', run: () => { setView('files'); setActiveCollection(null); setShowStarred(true); setPaletteOpen(false); } },
+      { kind: 'action', label: 'Show Duplicates', run: () => { setView('duplicates'); setPaletteOpen(false); } },
+      { kind: 'action', label: 'Extract PDF text', run: () => { setPaletteOpen(false); extractAllPdfs(); } },
+      { kind: 'action', label: 'Logout', run: () => logout() },
+    ];
+
+    const scoredActions = actions
+      .map(a => ({ a, s: fuzzyScore(a.label, paletteQ) }))
+      .filter(x => x.s > 0);
+
+    const scoredFiles = paletteQ
+      ? files
+          .map(f => ({ f, s: fuzzyScore(f.filename, paletteQ) }))
+          .filter(x => x.s > 0)
+          .sort((a, b) => b.s - a.s)
+          .slice(0, 8)
+          .map(x => ({ kind: 'file' as const, file: x.f }))
+      : files.slice(0, 6).map(f => ({ kind: 'file' as const, file: f }));
+
+    return [...scoredActions.map(x => x.a), ...scoredFiles];
+  }, [paletteOpen, paletteQ, files, viewMode]);
+
+  useEffect(() => { setPaletteIdx(0); }, [paletteQ]);
+
+  function runPaletteItem(item: PaletteItem) {
+    if (item.kind === 'file') { setPaletteOpen(false); open(item.file); }
+    else item.run();
+  }
 
   return (
     <div className="min-h-screen bg-gray-950 text-white flex">
       {sidebarOpen && <div onClick={() => setSidebarOpen(false)} className="md:hidden fixed inset-0 bg-black/60 z-30" />}
 
       <aside className={`fixed md:static top-0 left-0 h-full w-64 bg-gray-900 border-r border-gray-800 p-4 flex flex-col z-40 transition-transform duration-200 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0`}>
-        <div className="flex justify-between items-center mb-6">
+        <div className="flex justify-between items-center mb-4">
           <h1 className="text-xl font-semibold">My Vault</h1>
           <button onClick={() => setSidebarOpen(false)} className="md:hidden text-gray-400 hover:text-white text-2xl leading-none">×</button>
         </div>
+
+        <button
+          onClick={() => { setPaletteOpen(true); setPaletteQ(''); setPaletteIdx(0); }}
+          className="w-full text-left px-3 py-2 mb-4 rounded bg-gray-800 hover:bg-gray-700 text-sm text-gray-400 flex items-center justify-between"
+        >
+          <span>Search / commands</span>
+          <kbd className="text-xs px-1.5 py-0.5 rounded bg-gray-900 border border-gray-700">Ctrl K</kbd>
+        </button>
 
         <button
           onClick={() => { setActiveCollection(null); setShowStarred(false); setView('files'); clearSelection(); setSidebarOpen(false); }}
@@ -502,11 +626,7 @@ export default function Home() {
         )}
 
         <div className="mt-4 px-3 flex flex-col gap-2">
-          <button
-            onClick={extractAllPdfs}
-            disabled={extracting}
-            className="text-xs text-gray-500 hover:text-white text-left disabled:opacity-50"
-          >
+          <button onClick={extractAllPdfs} disabled={extracting} className="text-xs text-gray-500 hover:text-white text-left disabled:opacity-50">
             {extracting ? extractProgress : '📝 Extract PDF text'}
           </button>
           <button onClick={logout} className="text-xs text-gray-500 hover:text-white text-left">Logout</button>
@@ -531,13 +651,7 @@ export default function Home() {
           {view === 'files' && (
             <>
               <div className="flex flex-col md:flex-row gap-2 md:gap-3 mb-4 md:mb-6">
-                <input
-                  ref={searchRef}
-                  value={q}
-                  onChange={e => setQ(e.target.value)}
-                  placeholder="Search...  (press /)"
-                  className="flex-1 p-2 rounded bg-gray-900 border border-gray-800 focus:border-blue-500 outline-none min-w-0"
-                />
+                <input ref={searchRef} value={q} onChange={e => setQ(e.target.value)} placeholder="Search...  (press /)" className="flex-1 p-2 rounded bg-gray-900 border border-gray-800 focus:border-blue-500 outline-none min-w-0" />
                 <div className="flex gap-2 flex-wrap">
                   <label className="flex items-center gap-2 px-3 py-2 rounded bg-gray-900 border border-gray-800 text-sm cursor-pointer whitespace-nowrap">
                     <input type="checkbox" checked={searchContent} onChange={e => setSearchContent(e.target.checked)} className="accent-blue-500" />
@@ -582,7 +696,7 @@ export default function Home() {
               ) : viewMode === 'list' ? (
                 <FileList files={files} selected={selected} onOpen={open} onToggle={toggleSelect} onStar={toggleStar} onContext={handleContextMenu} onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd} />
               ) : useGrouping ? (
-                <div className="space-y-8 pb-24">
+                <div ref={gridRef} onMouseDown={handleGridMouseDown} className="space-y-8 pb-24">
                   {grouped.map(g => (
                     <div key={g.label}>
                       <h3 className="text-xs uppercase tracking-wider text-gray-500 font-semibold mb-3 px-1">{g.label}</h3>
@@ -591,7 +705,7 @@ export default function Home() {
                   ))}
                 </div>
               ) : (
-                <div className="pb-24">
+                <div ref={gridRef} onMouseDown={handleGridMouseDown} className="pb-24">
                   <FileGrid files={files} selected={selected} onOpen={open} onToggle={toggleSelect} onStar={toggleStar} onContext={handleContextMenu} onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd} />
                 </div>
               )}
@@ -615,17 +729,10 @@ export default function Home() {
               ) : (
                 duplicates.map((g, i) => (
                   <div key={i} className="bg-gray-900 border border-gray-800 rounded-lg p-4">
-                    <div className="text-xs text-gray-500 mb-3">
-                      {g.count} files · {formatSize(g.size_bytes)} each
-                    </div>
+                    <div className="text-xs text-gray-500 mb-3">{g.count} files · {formatSize(g.size_bytes)} each</div>
                     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2">
                       {g.files.map(f => (
-                        <div
-                          key={f.id}
-                          onClick={() => open(f)}
-                          onContextMenu={(e) => handleContextMenu(e, f)}
-                          className="bg-gray-950 border border-gray-800 rounded-lg p-2 cursor-pointer hover:border-blue-500 transition"
-                        >
+                        <div key={f.id} onClick={() => open(f)} onContextMenu={(e) => handleContextMenu(e, f)} className="bg-gray-950 border border-gray-800 rounded-lg p-2 cursor-pointer hover:border-blue-500 transition">
                           {f.mime_type.startsWith('image/') ? (
                             <img src={`/api/files/${f.id}/thumb`} alt={f.filename} className="w-full h-24 object-cover rounded mb-1.5 bg-gray-800" loading="lazy" />
                           ) : (
@@ -643,16 +750,77 @@ export default function Home() {
         </div>
       </main>
 
+      {/* Command Palette */}
+      {paletteOpen && (
+        <div onClick={() => setPaletteOpen(false)} className="fixed inset-0 bg-black/70 flex items-start justify-center pt-[15vh] z-[70] p-4">
+          <div onClick={e => e.stopPropagation()} className="bg-gray-900 border border-gray-700 rounded-lg shadow-2xl w-full max-w-lg overflow-hidden">
+            <input
+              ref={paletteRef}
+              autoFocus
+              value={paletteQ}
+              onChange={e => setPaletteQ(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  const item = paletteItems[paletteIdx];
+                  if (item) runPaletteItem(item);
+                }
+              }}
+              placeholder="Search files or type a command..."
+              className="w-full px-4 py-3 bg-transparent border-b border-gray-800 outline-none text-sm"
+            />
+            <div className="max-h-80 overflow-y-auto py-1">
+              {paletteItems.length === 0 && (
+                <div className="px-4 py-6 text-sm text-gray-500 text-center">No matches</div>
+              )}
+              {paletteItems.map((item, i) => {
+                const active = i === paletteIdx;
+                return (
+                  <button
+                    key={i}
+                    onMouseEnter={() => setPaletteIdx(i)}
+                    onClick={() => runPaletteItem(item)}
+                    className={`w-full text-left px-4 py-2 flex items-center gap-3 text-sm ${active ? 'bg-blue-600/30 border-l-2 border-blue-500' : ''}`}
+                  >
+                    {item.kind === 'file' ? (
+                      <>
+                        <span className="text-base">
+                          {item.file.mime_type.startsWith('image/') ? '🖼' : item.file.mime_type === 'application/pdf' ? '📄' : item.file.mime_type.startsWith('video/') ? '🎬' : '📎'}
+                        </span>
+                        <span className="truncate flex-1">{item.file.filename}</span>
+                        <span className="text-xs text-gray-500">{formatSize(item.file.size_bytes)}</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="text-base">⚡</span>
+                        <span className="flex-1">{item.label}</span>
+                        {item.hint && <span className="text-xs text-gray-500">{item.hint}</span>}
+                      </>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="px-4 py-2 border-t border-gray-800 text-xs text-gray-500 flex gap-4">
+              <span>↑ ↓ navigate</span>
+              <span>↵ select</span>
+              <span>Esc close</span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {menu && (
         <div
           onClick={(e) => e.stopPropagation()}
-          style={{ position: 'fixed', left: Math.min(menu.x, window.innerWidth - 220), top: Math.min(menu.y, window.innerHeight - 280) }}
+          style={{ position: 'fixed', left: Math.min(menu.x, window.innerWidth - 220), top: Math.min(menu.y, window.innerHeight - 320) }}
           className="bg-gray-900 border border-gray-700 rounded-lg shadow-2xl py-1 w-52 z-[60] text-sm"
         >
           <button onClick={() => { open(menu.file); setMenu(null); }} className="w-full text-left px-3 py-2 hover:bg-gray-800">Open</button>
           <button onClick={() => { toggleStar(menu.file); setMenu(null); }} className="w-full text-left px-3 py-2 hover:bg-gray-800">{menu.file.starred ? '★ Unstar' : '☆ Star'}</button>
           <button onClick={() => { renameFileById(menu.file); setMenu(null); }} className="w-full text-left px-3 py-2 hover:bg-gray-800">Rename</button>
           <button onClick={() => { copyLink(menu.file); setMenu(null); }} className="w-full text-left px-3 py-2 hover:bg-gray-800">Copy link</button>
+          <button onClick={() => { createShareLink(menu.file); setMenu(null); }} className="w-full text-left px-3 py-2 hover:bg-gray-800 text-blue-400">🔗 Public share link</button>
 
           {manualCollections.length > 0 && (
             <div className="relative">
@@ -772,7 +940,6 @@ export default function Home() {
             ) : (
               <iframe src={preview.url} className="w-full h-[70vh] md:h-[75vh] max-w-5xl bg-white rounded" />
             )}
-
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center mt-3 gap-2 md:gap-3 w-full max-w-5xl px-2">
               {renaming ? (
                 <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') renameCurrent(); if (e.key === 'Escape') setRenaming(false); }} onBlur={renameCurrent} className="flex-1 w-full px-2 py-1 rounded bg-gray-800 border border-blue-500 text-sm outline-none" />
@@ -781,11 +948,11 @@ export default function Home() {
               )}
               <div className="flex items-center gap-4 flex-shrink-0">
                 <span className="text-xs text-gray-600 hidden md:inline">{previewIndex + 1} / {files.length}</span>
+                <button onClick={() => files.find(f => f.id === preview.id) && createShareLink(files.find(f => f.id === preview.id)!)} className="text-sm text-blue-400 hover:underline">Share</button>
                 <a href={preview.url} download={preview.name} className="text-sm text-blue-400 hover:underline">Download</a>
                 <button onClick={removeCurrent} className="text-sm text-red-400 hover:text-red-300">Remove</button>
               </div>
             </div>
-
             {manualCollections.length > 0 && (
               <div className="flex flex-wrap items-center gap-2 mt-3 w-full max-w-5xl px-2">
                 <span className="text-xs text-gray-500">Add to:</span>
@@ -818,7 +985,7 @@ function FileGrid({ files, selected, onOpen, onToggle, onStar, onContext, onTouc
       {files.map(f => {
         const isSel = selected.has(f.id);
         return (
-          <div key={f.id} onClick={() => onOpen(f)} onContextMenu={(e) => onContext(e, f)} onTouchStart={(e) => onTouchStart(e, f)} onTouchEnd={onTouchEnd} onTouchMove={onTouchEnd}
+          <div key={f.id} data-file-id={f.id} onClick={() => onOpen(f)} onContextMenu={(e) => onContext(e, f)} onTouchStart={(e) => onTouchStart(e, f)} onTouchEnd={onTouchEnd} onTouchMove={onTouchEnd}
             className={`relative group bg-gray-900 border rounded-lg p-2 md:p-3 text-left cursor-pointer transition select-none ${isSel ? 'border-blue-500 ring-2 ring-blue-500/40' : 'border-gray-800 hover:border-blue-500'}`}>
             <div onClick={(e) => onToggle(f.id, e)} className={`absolute top-1.5 right-1.5 md:top-2 md:right-2 w-6 h-6 rounded-full border-2 flex items-center justify-center text-xs font-bold transition z-10 ${isSel ? 'bg-blue-500 border-blue-500 text-white' : 'bg-black/60 border-white/40 md:opacity-0 md:group-hover:opacity-100'}`}>
               {isSel ? '✓' : ''}
@@ -858,7 +1025,7 @@ function FileList({ files, selected, onOpen, onToggle, onStar, onContext, onTouc
         const isSel = selected.has(f.id);
         const typeLabel = f.mime_type.startsWith('image/') ? 'Image' : f.mime_type.startsWith('video/') ? 'Video' : f.mime_type === 'application/pdf' ? 'PDF' : 'File';
         return (
-          <div key={f.id} onClick={() => onOpen(f)} onContextMenu={(e) => onContext(e, f)} onTouchStart={(e) => onTouchStart(e, f)} onTouchEnd={onTouchEnd} onTouchMove={onTouchEnd}
+          <div key={f.id} data-file-id={f.id} onClick={() => onOpen(f)} onContextMenu={(e) => onContext(e, f)} onTouchStart={(e) => onTouchStart(e, f)} onTouchEnd={onTouchEnd} onTouchMove={onTouchEnd}
             className={`grid grid-cols-[40px_40px_1fr_80px] md:grid-cols-[40px_40px_1fr_100px_100px_140px] gap-2 px-3 py-2 items-center cursor-pointer border-b border-gray-800/50 hover:bg-gray-800/50 transition ${isSel ? 'bg-blue-900/20' : ''}`}>
             <div onClick={(e) => onToggle(f.id, e)} className={`w-5 h-5 rounded border-2 flex items-center justify-center text-xs ${isSel ? 'bg-blue-500 border-blue-500 text-white' : 'border-gray-600'}`}>
               {isSel ? '✓' : ''}

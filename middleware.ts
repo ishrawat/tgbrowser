@@ -8,6 +8,8 @@ export function middleware(req: NextRequest) {
     pathname.startsWith('/login') ||
     pathname.startsWith('/api/auth') ||
     pathname.startsWith('/api/webhook') ||
+    pathname.startsWith('/api/share') ||
+    pathname.startsWith('/s/') ||
     pathname.startsWith('/_next')
   ) {
     return NextResponse.next();
