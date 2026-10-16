@@ -29,10 +29,10 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
   const buffer = Buffer.from(await pdfRes.arrayBuffer());
 
   try {
-    // @ts-ignore
-async function open(f:     const pdfParse = (await import('pdf-parse')).default;File) {
+    const mod: any = await import('pdf-parse');
+    const pdfParse = mod.default || mod;
     const parsed = await pdfParse(buffer);
-    const text = (parsed.text || '').slice(0, 500000); // cap at 500k chars
+    const text = (parsed.text || '').slice(0, 500000);
     await sql`
       UPDATE files
       SET content_text = ${text}, text_extracted_at = now()
