@@ -514,7 +514,7 @@ export default function Home() {
 
   const paletteItems: PaletteItem[] = useMemo(() => {
     if (!paletteOpen) return [];
-    const actions: PaletteItem[] = [
+    const actions: Extract<PaletteItem, { kind: 'action' }>[] = [
       { kind: 'action', label: 'Toggle grid / list view', hint: 'view', run: () => { setViewMode(viewMode === 'grid' ? 'list' : 'grid'); setPaletteOpen(false); } },
       { kind: 'action', label: 'Sort: Newest first', run: () => { setSort('date_desc'); setPaletteOpen(false); } },
       { kind: 'action', label: 'Sort: Name A–Z', run: () => { setSort('name_asc'); setPaletteOpen(false); } },
