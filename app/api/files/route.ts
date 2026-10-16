@@ -39,6 +39,7 @@ export async function GET(req: Request) {
   if (type === 'image') where.push(`mime_type LIKE 'image/%'`);
   if (type === 'video') where.push(`mime_type LIKE 'video/%'`);
   if (type === 'pdf') where.push(`mime_type = 'application/pdf'`);
+  if (searchParams.get('starred') === 'true') where.push(`starred = true`);
 
   if (collection) {
     const colls = await sql`SELECT is_smart, rules FROM collections WHERE id = ${collection}`;
