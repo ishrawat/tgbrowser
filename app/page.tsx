@@ -16,7 +16,7 @@ export default function Home() {
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [preview, setPreview] = useState<{ url: string; mime: string; name: string } | null>(null);
+  const [preview, setPreview] = useState<{ id: number; url: string; mime: string; name: string } | null>(null);
 
   async function load(reset = false) {
     setLoading(true);
@@ -31,16 +31,15 @@ export default function Home() {
 
   useEffect(() => { load(true); }, [q, type]);
 
-  async function open(f: File) {
-    const res = await fetch(`/api/files/${f.id}/url`);
-    if (!res.ok) {
-      alert('Cannot load file (may exceed 20 MB)');
-      return;
-    }
-    const { url } = await res.json();
-    setPreview({ url, mime: f.mime_type, name: f.filename });
+async function open(f: File) {
+  const res = await fetch(`/api/files/${f.id}/url`);
+  if (!res.ok) {
+    alert('Cannot load file (may exceed 20 MB)');
+    return;
   }
-
+  const { url } = await res.json();
+  setPreview({ id: f.id, url, mime: f.mime_type, name: f.filename });
+}
   async function logout() {
     document.cookie = 'auth=; Max-Age=0; path=/';
     window.location.href = '/login';
@@ -120,10 +119,15 @@ export default function Home() {
         >
           <div onClick={e => e.stopPropagation()} className="max-w-4xl max-h-full">
             {preview.mime.startsWith('image/') ? (
-              <img src={preview.url} alt={preview.name} className="max-h-[90vh] rounded" />
-            ) : (
-              <iframe src={preview.url} className="w-[80vw] h-[90vh] bg-white rounded" />
-            )}
+  <img src={preview.url} alt={preview.name} className="max-h-[90vh] rounded" />
+) : preview.mime === 'application/pdf' ? (
+  <iframe
+    src={`/api/files/${preview.id}/view`}
+    className="w-[85vw] h-[90vh] bg-white rounded"
+  />
+) : (
+  <iframe src={preview.url} className="w-[85vw] h-[90vh] bg-white rounded" />
+)}
             <div className="flex justify-between items-center mt-3">
               <span className="text-sm text-gray-400">{preview.name}</span>
               <a href={preview.url} download={preview.name}
