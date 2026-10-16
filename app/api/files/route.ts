@@ -9,6 +9,15 @@ type Rules = {
   dateTo?: string;
 };
 
+const ORDER_MAP: Record<string, string> = {
+  date_desc: 'telegram_date DESC',
+  date_asc: 'telegram_date ASC',
+  name_asc: 'filename ASC',
+  name_desc: 'filename DESC',
+  size_desc: 'size_bytes DESC',
+  size_asc: 'size_bytes ASC',
+};
+
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const page = Math.max(1, parseInt(searchParams.get('page') || '1'));
@@ -17,6 +26,8 @@ export async function GET(req: Request) {
   const q = searchParams.get('q')?.trim();
   const type = searchParams.get('type');
   const collection = searchParams.get('collection');
+  const sort = searchParams.get('sort') || 'date_desc';
+  const orderSql = ORDER_MAP[sort] || ORDER_MAP.date_desc;
 
   const where: string[] = [];
   const params: any[] = [];
@@ -35,7 +46,6 @@ export async function GET(req: Request) {
 
     if (coll?.is_smart && coll.rules) {
       const r = coll.rules as Rules;
-
       if (r.type === 'image') where.push(`mime_type LIKE 'image/%'`);
       else if (r.type === 'video') where.push(`mime_type LIKE 'video/%'`);
       else if (r.type === 'pdf') where.push(`mime_type = 'application/pdf'`);
@@ -71,7 +81,7 @@ export async function GET(req: Request) {
   const files = (await sql.query(
     `SELECT id, filename, mime_type, size_bytes, telegram_date
      FROM files ${whereSql}
-     ORDER BY telegram_date DESC
+     ORDER BY ${orderSql}
      LIMIT ${limit + 1} OFFSET ${offset}`,
     params
   )) as any[];

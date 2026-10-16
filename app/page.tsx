@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 type File = {
   id: number;
@@ -22,6 +22,41 @@ type RuleType = '' | 'image' | 'video' | 'pdf';
 
 type Menu = { x: number; y: number; file: File };
 
+const SORTS = [
+  { value: 'date_desc', label: 'Newest first' },
+  { value: 'date_asc', label: 'Oldest first' },
+  { value: 'name_asc', label: 'Name A–Z' },
+  { value: 'name_desc', label: 'Name Z–A' },
+  { value: 'size_desc', label: 'Largest first' },
+  { value: 'size_asc', label: 'Smallest first' },
+];
+
+function groupByDate(files: File[]) {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const yesterday = new Date(today); yesterday.setDate(today.getDate() - 1);
+  const weekAgo = new Date(today); weekAgo.setDate(today.getDate() - 7);
+  const monthAgo = new Date(today); monthAgo.setDate(today.getDate() - 30);
+
+  const buckets: Record<string, File[]> = {
+    Today: [], Yesterday: [], 'This Week': [], 'This Month': [], Earlier: [],
+  };
+
+  for (const f of files) {
+    const d = new Date(f.telegram_date);
+    const day = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    if (day >= today) buckets.Today.push(f);
+    else if (day >= yesterday) buckets.Yesterday.push(f);
+    else if (day >= weekAgo) buckets['This Week'].push(f);
+    else if (day >= monthAgo) buckets['This Month'].push(f);
+    else buckets.Earlier.push(f);
+  }
+
+  return Object.entries(buckets)
+    .filter(([, fs]) => fs.length > 0)
+    .map(([label, fs]) => ({ label, files: fs }));
+}
+
 export default function Home() {
   const [files, setFiles] = useState<File[]>([]);
   const [collections, setCollections] = useState<Collection[]>([]);
@@ -29,9 +64,11 @@ export default function Home() {
   const [q, setQ] = useState('');
   const [debouncedQ, setDebouncedQ] = useState('');
   const [type, setType] = useState('');
+  const [sort, setSort] = useState('date_desc');
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [initialLoad, setInitialLoad] = useState(true);
   const [preview, setPreview] = useState<{ id: number; url: string; mime: string; name: string } | null>(null);
   const [previewCollections, setPreviewCollections] = useState<number[]>([]);
   const [showCreate, setShowCreate] = useState(false);
@@ -43,6 +80,7 @@ export default function Home() {
   const [menuMoveSub, setMenuMoveSub] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const longPressRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
 
   const [newName, setNewName] = useState('');
   const [isSmart, setIsSmart] = useState(false);
@@ -56,22 +94,38 @@ export default function Home() {
     return () => clearTimeout(t);
   }, [q]);
 
+  // Keyboard shortcuts
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      const inInput = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+
       if (e.key === 'Escape') {
-        if (menu) { setMenu(null); return; }
+        if (menu) { setMenu(null); setMenuSub(false); setMenuMoveSub(false); return; }
         if (renaming) { setRenaming(false); return; }
         if (preview) { setPreview(null); return; }
         if (selected.size > 0) { setSelected(new Set()); return; }
         if (sidebarOpen) { setSidebarOpen(false); return; }
+        return;
+      }
+
+      if (e.key === '/' && !inInput) {
+        e.preventDefault();
+        searchRef.current?.focus();
+        return;
+      }
+
+      if (preview && !inInput) {
+        if (e.key === 'ArrowRight') { e.preventDefault(); navigatePreview(1); }
+        if (e.key === 'ArrowLeft') { e.preventDefault(); navigatePreview(-1); }
       }
     };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
-  }, [preview, renaming, selected, menu, sidebarOpen]);
+  }, [preview, renaming, selected, menu, sidebarOpen, files]);
 
   useEffect(() => {
-    const close = () => { setMenu(null); setMenuSub(false); };
+    const close = () => { setMenu(null); setMenuSub(false); setMenuMoveSub(false); };
     if (menu) {
       window.addEventListener('click', close);
       window.addEventListener('scroll', close, true);
@@ -90,7 +144,12 @@ export default function Home() {
   async function load(reset = false) {
     setLoading(true);
     const p = reset ? 1 : page;
-    const params = new URLSearchParams({ page: String(p), q: debouncedQ, type });
+    const params = new URLSearchParams({
+      page: String(p),
+      q: debouncedQ,
+      type,
+      sort,
+    });
     if (activeCollection) params.set('collection', String(activeCollection));
     const res = await fetch(`/api/files?${params}`);
     const data = await res.json();
@@ -98,9 +157,10 @@ export default function Home() {
     setHasMore(data.hasMore);
     setPage(p + 1);
     setLoading(false);
+    setInitialLoad(false);
   }
 
-  useEffect(() => { load(true); }, [debouncedQ, type, activeCollection]);
+  useEffect(() => { load(true); }, [debouncedQ, type, activeCollection, sort]);
   useEffect(() => { loadCollections(); }, []);
 
   async function open(f: File) {
@@ -114,6 +174,15 @@ export default function Home() {
       const data = await cr.json();
       setPreviewCollections(data.map((c: Collection) => c.id));
     }
+  }
+
+  async function navigatePreview(dir: number) {
+    if (!preview) return;
+    const idx = files.findIndex(f => f.id === preview.id);
+    if (idx === -1) return;
+    const next = files[idx + dir];
+    if (!next) return;
+    await open(next);
   }
 
   function toggleSelect(id: number, e: React.MouseEvent) {
@@ -232,6 +301,7 @@ export default function Home() {
   function openMenu(f: File, x: number, y: number) {
     setMenu({ x, y, file: f });
     setMenuSub(false);
+    setMenuMoveSub(false);
   }
 
   function handleContextMenu(e: React.MouseEvent, f: File) {
@@ -311,25 +381,23 @@ export default function Home() {
 
   const activeData = collections.find(c => c.id === activeCollection);
   const manualCollections = collections.filter(c => !c.is_smart);
+  const grouped = useMemo(() => groupByDate(files), [files]);
+  const useGrouping = sort === 'date_desc' || sort === 'date_asc';
+
+  const previewIndex = preview ? files.findIndex(f => f.id === preview.id) : -1;
+  const canPrev = previewIndex > 0;
+  const canNext = previewIndex >= 0 && previewIndex < files.length - 1;
 
   return (
     <div className="min-h-screen bg-gray-950 text-white flex">
-      {/* Mobile overlay */}
       {sidebarOpen && (
-        <div
-          onClick={() => setSidebarOpen(false)}
-          className="md:hidden fixed inset-0 bg-black/60 z-30"
-        />
+        <div onClick={() => setSidebarOpen(false)} className="md:hidden fixed inset-0 bg-black/60 z-30" />
       )}
 
-      {/* Sidebar */}
       <aside className={`fixed md:static top-0 left-0 h-full w-64 bg-gray-900 border-r border-gray-800 p-4 flex flex-col z-40 transition-transform duration-200 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0`}>
         <div className="flex justify-between items-center mb-6">
           <h1 className="text-xl font-semibold">My Vault</h1>
-          <button
-            onClick={() => setSidebarOpen(false)}
-            className="md:hidden text-gray-400 hover:text-white text-2xl leading-none"
-          >
+          <button onClick={() => setSidebarOpen(false)} className="md:hidden text-gray-400 hover:text-white text-2xl leading-none">
             ×
           </button>
         </div>
@@ -345,10 +413,7 @@ export default function Home() {
 
         <div className="mt-6 mb-2 flex justify-between items-center px-3">
           <span className="text-xs uppercase text-gray-500 font-semibold tracking-wider">Collections</span>
-          <button
-            onClick={() => setShowCreate(true)}
-            className="text-gray-400 hover:text-white text-lg leading-none"
-          >
+          <button onClick={() => setShowCreate(true)} className="text-gray-400 hover:text-white text-lg leading-none">
             +
           </button>
         </div>
@@ -384,22 +449,17 @@ export default function Home() {
           {collections.length === 0 && <p className="text-xs text-gray-600 px-3">None yet — click +</p>}
         </div>
 
-        <button
-          onClick={logout}
-          className="text-xs text-gray-500 hover:text-white mt-4 text-left px-3"
-        >
+        <button onClick={logout} className="text-xs text-gray-500 hover:text-white mt-4 text-left px-3">
           Logout
         </button>
       </aside>
 
-      {/* Main */}
       <main className="flex-1 min-w-0 p-3 md:p-6 overflow-y-auto">
         <div className="max-w-6xl mx-auto">
           <div className="flex items-center gap-2 md:gap-3 mb-4">
             <button
               onClick={() => setSidebarOpen(true)}
               className="md:hidden text-2xl leading-none w-9 h-9 flex items-center justify-center rounded bg-gray-900 border border-gray-800"
-              aria-label="Menu"
             >
               ☰
             </button>
@@ -413,70 +473,97 @@ export default function Home() {
             )}
           </div>
 
-          <div className="flex gap-2 md:gap-3 mb-4 md:mb-6">
+          <div className="flex flex-col md:flex-row gap-2 md:gap-3 mb-4 md:mb-6">
             <input
+              ref={searchRef}
               value={q}
               onChange={e => setQ(e.target.value)}
-              placeholder="Search..."
+              placeholder="Search...  (press /)"
               className="flex-1 p-2 rounded bg-gray-900 border border-gray-800 focus:border-blue-500 outline-none min-w-0"
             />
-            <select
-              value={type}
-              onChange={e => setType(e.target.value)}
-              className="p-2 rounded bg-gray-900 border border-gray-800 flex-shrink-0"
-            >
-              <option value="">All</option>
-              <option value="image">Images</option>
-              <option value="video">Videos</option>
-              <option value="pdf">PDFs</option>
-            </select>
+            <div className="flex gap-2">
+              <select
+                value={type}
+                onChange={e => setType(e.target.value)}
+                className="p-2 rounded bg-gray-900 border border-gray-800 flex-shrink-0"
+              >
+                <option value="">All</option>
+                <option value="image">Images</option>
+                <option value="video">Videos</option>
+                <option value="pdf">PDFs</option>
+              </select>
+              <select
+                value={sort}
+                onChange={e => setSort(e.target.value)}
+                className="p-2 rounded bg-gray-900 border border-gray-800 flex-shrink-0"
+              >
+                {SORTS.map(s => (
+                  <option key={s.value} value={s.value}>{s.label}</option>
+                ))}
+              </select>
+            </div>
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2 md:gap-3 pb-24">
-            {files.map(f => {
-              const isSel = selected.has(f.id);
-              return (
-                <div
-                  key={f.id}
-                  onClick={() => open(f)}
-                  onContextMenu={(e) => handleContextMenu(e, f)}
-                  onTouchStart={(e) => handleTouchStart(e, f)}
-                  onTouchEnd={handleTouchEnd}
-                  onTouchMove={handleTouchEnd}
-                  className={`relative group bg-gray-900 border rounded-lg p-2 md:p-3 text-left cursor-pointer transition select-none ${
-                    isSel ? 'border-blue-500 ring-2 ring-blue-500/40' : 'border-gray-800 hover:border-blue-500'
-                  }`}
-                >
-                  <div
-                    onClick={(e) => toggleSelect(f.id, e)}
-                    className={`absolute top-1.5 right-1.5 md:top-2 md:right-2 w-6 h-6 rounded-full border-2 flex items-center justify-center text-xs font-bold transition z-10 ${
-                      isSel
-                        ? 'bg-blue-500 border-blue-500 text-white'
-                        : 'bg-black/60 border-white/40 md:opacity-0 md:group-hover:opacity-100'
-                    }`}
-                  >
-                    {isSel ? '✓' : ''}
-                  </div>
-                  {f.mime_type.startsWith('image/') ? (
-                    <img
-                      src={`/api/files/${f.id}/thumb`}
-                      alt={f.filename}
-                      className="w-full h-28 md:h-32 object-cover rounded mb-2 bg-gray-800"
-                      loading="lazy"
-                    />
-                  ) : (
-                    <div className="text-3xl mb-2 h-28 md:h-32 flex items-center justify-center bg-gray-800 rounded">
-                      {f.mime_type === 'application/pdf' ? '📄' : f.mime_type.startsWith('video/') ? '🎬' : '📎'}
-                    </div>
-                  )}
-                  <div className="text-xs md:text-sm truncate">{f.filename}</div>
-                  <div className="text-[10px] md:text-xs text-gray-500 mt-0.5">
-                    {(f.size_bytes / 1024).toFixed(0)} KB
-                  </div>
+          {initialLoad ? (
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2 md:gap-3">
+              {Array.from({ length: 15 }).map((_, i) => (
+                <div key={i} className="bg-gray-900 border border-gray-800 rounded-lg p-2 md:p-3 animate-pulse">
+                  <div className="w-full h-28 md:h-32 bg-gray-800 rounded mb-2" />
+                  <div className="h-3 bg-gray-800 rounded w-3/4 mb-1.5" />
+                  <div className="h-2 bg-gray-800 rounded w-1/3" />
                 </div>
-              );
-            })}
-          </div>
+              ))}
+            </div>
+          ) : useGrouping ? (
+            <div className="space-y-8 pb-24">
+              {grouped.map(g => (
+                <div key={g.label}>
+                  <h3 className="text-xs uppercase tracking-wider text-gray-500 font-semibold mb-3 px-1">
+                    {g.label}
+                  </h3>
+                  <FileGrid
+                    files={g.files}
+                    selected={selected}
+                    onOpen={open}
+                    onToggle={toggleSelect}
+                    onContext={handleContextMenu}
+                    onTouchStart={handleTouchStart}
+                    onTouchEnd={handleTouchEnd}
+                  />
+                </div>
+              ))}
+              {grouped.length === 0 && !loading && (
+                <p className="text-gray-500 text-center mt-12 text-sm">
+                  {activeCollection
+                    ? activeData?.is_smart
+                      ? 'No files match these rules yet.'
+                      : 'No files in this collection yet.'
+                    : 'No files yet. Post a file in your Telegram group.'}
+                </p>
+              )}
+            </div>
+          ) : (
+            <div className="pb-24">
+              <FileGrid
+                files={files}
+                selected={selected}
+                onOpen={open}
+                onToggle={toggleSelect}
+                onContext={handleContextMenu}
+                onTouchStart={handleTouchStart}
+                onTouchEnd={handleTouchEnd}
+              />
+              {files.length === 0 && !loading && (
+                <p className="text-gray-500 text-center mt-12 text-sm">
+                  {activeCollection
+                    ? activeData?.is_smart
+                      ? 'No files match these rules yet.'
+                      : 'No files in this collection yet.'
+                    : 'No files yet. Post a file in your Telegram group.'}
+                </p>
+              )}
+            </div>
+          )}
 
           {hasMore && (
             <button
@@ -487,20 +574,9 @@ export default function Home() {
               {loading ? 'Loading...' : 'Load more'}
             </button>
           )}
-
-          {files.length === 0 && !loading && (
-            <p className="text-gray-500 text-center mt-12 text-sm">
-              {activeCollection
-                ? activeData?.is_smart
-                  ? 'No files match these rules yet.'
-                  : 'No files in this collection yet.'
-                : 'No files yet. Post a file in your Telegram group.'}
-            </p>
-          )}
         </div>
       </main>
 
-      {/* Context Menu */}
       {menu && (
         <div
           onClick={(e) => e.stopPropagation()}
@@ -511,22 +587,13 @@ export default function Home() {
           }}
           className="bg-gray-900 border border-gray-700 rounded-lg shadow-2xl py-1 w-52 z-[60] text-sm"
         >
-          <button
-            onClick={() => { open(menu.file); setMenu(null); }}
-            className="w-full text-left px-3 py-2 hover:bg-gray-800"
-          >
+          <button onClick={() => { open(menu.file); setMenu(null); }} className="w-full text-left px-3 py-2 hover:bg-gray-800">
             Open
           </button>
-          <button
-            onClick={() => { renameFileById(menu.file); setMenu(null); }}
-            className="w-full text-left px-3 py-2 hover:bg-gray-800"
-          >
+          <button onClick={() => { renameFileById(menu.file); setMenu(null); }} className="w-full text-left px-3 py-2 hover:bg-gray-800">
             Rename
           </button>
-          <button
-            onClick={() => { copyLink(menu.file); setMenu(null); }}
-            className="w-full text-left px-3 py-2 hover:bg-gray-800"
-          >
+          <button onClick={() => { copyLink(menu.file); setMenu(null); }} className="w-full text-left px-3 py-2 hover:bg-gray-800">
             Copy link
           </button>
 
@@ -594,7 +661,6 @@ export default function Home() {
         </div>
       )}
 
-      {/* Selection action bar */}
       {selected.size > 0 && (
         <div className="fixed bottom-3 left-1/2 -translate-x-1/2 bg-gray-900 border border-gray-700 rounded-lg shadow-2xl px-3 py-2 md:px-4 md:py-3 flex items-center gap-2 md:gap-3 z-40 max-w-[95vw]">
           <span className="text-xs md:text-sm font-medium whitespace-nowrap">{selected.size} selected</span>
@@ -608,21 +674,15 @@ export default function Home() {
               <option key={c.id} value={c.id}>{c.name}</option>
             ))}
           </select>
-          <button onClick={bulkRemove} className="text-xs md:text-sm text-red-400 hover:text-red-300">
-            Remove
-          </button>
-          <button onClick={clearSelection} className="text-xs md:text-sm text-gray-400 hover:text-white">
-            Clear
-          </button>
+          <button onClick={bulkRemove} className="text-xs md:text-sm text-red-400 hover:text-red-300">Remove</button>
+          <button onClick={clearSelection} className="text-xs md:text-sm text-gray-400 hover:text-white">Clear</button>
         </div>
       )}
 
-      {/* Create collection modal */}
       {showCreate && (
         <div onClick={resetForm} className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
           <div onClick={e => e.stopPropagation()} className="bg-gray-900 border border-gray-800 rounded-lg p-5 md:p-6 w-full max-w-md max-h-[90vh] overflow-y-auto">
             <h3 className="text-lg font-semibold mb-4">New Collection</h3>
-
             <input
               autoFocus
               value={newName}
@@ -630,7 +690,6 @@ export default function Home() {
               placeholder="Name"
               className="w-full px-3 py-2 rounded bg-gray-800 border border-gray-700 focus:border-blue-500 outline-none mb-4"
             />
-
             <button
               type="button"
               onClick={() => setIsSmart(!isSmart)}
@@ -692,9 +751,7 @@ export default function Home() {
             )}
 
             <div className="flex justify-end gap-2">
-              <button onClick={resetForm} className="px-4 py-2 text-sm text-gray-400 hover:text-white">
-                Cancel
-              </button>
+              <button onClick={resetForm} className="px-4 py-2 text-sm text-gray-400 hover:text-white">Cancel</button>
               <button
                 onClick={createCollection}
                 disabled={!newName.trim()}
@@ -707,7 +764,6 @@ export default function Home() {
         </div>
       )}
 
-      {/* Preview modal */}
       {preview && (
         <div
           onClick={() => setPreview(null)}
@@ -719,6 +775,26 @@ export default function Home() {
           >
             ×
           </button>
+
+          {canPrev && (
+            <button
+              onClick={(e) => { e.stopPropagation(); navigatePreview(-1); }}
+              className="absolute left-2 md:left-4 top-1/2 -translate-y-1/2 w-10 h-10 md:w-12 md:h-12 flex items-center justify-center rounded-full bg-black/60 hover:bg-black/90 text-white text-2xl z-10"
+              aria-label="Previous"
+            >
+              ‹
+            </button>
+          )}
+          {canNext && (
+            <button
+              onClick={(e) => { e.stopPropagation(); navigatePreview(1); }}
+              className="absolute right-2 md:right-4 top-1/2 -translate-y-1/2 w-10 h-10 md:w-12 md:h-12 flex items-center justify-center rounded-full bg-black/60 hover:bg-black/90 text-white text-2xl z-10"
+              aria-label="Next"
+            >
+              ›
+            </button>
+          )}
+
           <div onClick={e => e.stopPropagation()} className="w-full h-full flex flex-col items-center justify-center">
             {preview.mime.startsWith('image/') ? (
               <img src={preview.url} alt={preview.name} className="max-h-[70vh] md:max-h-[75vh] max-w-[95vw] rounded" />
@@ -747,18 +823,16 @@ export default function Home() {
                 <span
                   onClick={() => { setRenameValue(preview.name); setRenaming(true); }}
                   className="text-sm text-gray-300 truncate cursor-pointer hover:text-white flex-1 w-full"
-                  title="Click to rename"
                 >
                   {preview.name}
                 </span>
               )}
               <div className="flex items-center gap-4 flex-shrink-0">
-                <a href={preview.url} download={preview.name} className="text-sm text-blue-400 hover:underline">
-                  Download
-                </a>
-                <button onClick={removeCurrent} className="text-sm text-red-400 hover:text-red-300">
-                  Remove
-                </button>
+                <span className="text-xs text-gray-600 hidden md:inline">
+                  {previewIndex + 1} / {files.length}
+                </span>
+                <a href={preview.url} download={preview.name} className="text-sm text-blue-400 hover:underline">Download</a>
+                <button onClick={removeCurrent} className="text-sm text-red-400 hover:text-red-300">Remove</button>
               </div>
             </div>
 
@@ -788,6 +862,66 @@ export default function Home() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function FileGrid({
+  files, selected, onOpen, onToggle, onContext, onTouchStart, onTouchEnd,
+}: {
+  files: File[];
+  selected: Set<number>;
+  onOpen: (f: File) => void;
+  onToggle: (id: number, e: React.MouseEvent) => void;
+  onContext: (e: React.MouseEvent, f: File) => void;
+  onTouchStart: (e: React.TouchEvent, f: File) => void;
+  onTouchEnd: () => void;
+}) {
+  return (
+    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2 md:gap-3">
+      {files.map(f => {
+        const isSel = selected.has(f.id);
+        return (
+          <div
+            key={f.id}
+            onClick={() => onOpen(f)}
+            onContextMenu={(e) => onContext(e, f)}
+            onTouchStart={(e) => onTouchStart(e, f)}
+            onTouchEnd={onTouchEnd}
+            onTouchMove={onTouchEnd}
+            className={`relative group bg-gray-900 border rounded-lg p-2 md:p-3 text-left cursor-pointer transition select-none ${
+              isSel ? 'border-blue-500 ring-2 ring-blue-500/40' : 'border-gray-800 hover:border-blue-500'
+            }`}
+          >
+            <div
+              onClick={(e) => onToggle(f.id, e)}
+              className={`absolute top-1.5 right-1.5 md:top-2 md:right-2 w-6 h-6 rounded-full border-2 flex items-center justify-center text-xs font-bold transition z-10 ${
+                isSel
+                  ? 'bg-blue-500 border-blue-500 text-white'
+                  : 'bg-black/60 border-white/40 md:opacity-0 md:group-hover:opacity-100'
+              }`}
+            >
+              {isSel ? '✓' : ''}
+            </div>
+            {f.mime_type.startsWith('image/') ? (
+              <img
+                src={`/api/files/${f.id}/thumb`}
+                alt={f.filename}
+                className="w-full h-28 md:h-32 object-cover rounded mb-2 bg-gray-800"
+                loading="lazy"
+              />
+            ) : (
+              <div className="text-3xl mb-2 h-28 md:h-32 flex items-center justify-center bg-gray-800 rounded">
+                {f.mime_type === 'application/pdf' ? '📄' : f.mime_type.startsWith('video/') ? '🎬' : '📎'}
+              </div>
+            )}
+            <div className="text-xs md:text-sm truncate">{f.filename}</div>
+            <div className="text-[10px] md:text-xs text-gray-500 mt-0.5">
+              {(f.size_bytes / 1024).toFixed(0)} KB
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
