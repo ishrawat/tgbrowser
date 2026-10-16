@@ -32,9 +32,10 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [preview, setPreview] = useState<{ id: number; url: string; mime: string; name: string } | null>(null);
   const [previewCollections, setPreviewCollections] = useState<number[]>([]);
-  const [syncing, setSyncing] = useState(false);
-  const [syncProgress, setSyncProgress] = useState('');
   const [showCreate, setShowCreate] = useState(false);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [renaming, setRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState('');
 
   const [newName, setNewName] = useState('');
   const [isSmart, setIsSmart] = useState(false);
@@ -49,10 +50,16 @@ export default function Home() {
   }, [q]);
 
   useEffect(() => {
-    const h = (e: KeyboardEvent) => e.key === 'Escape' && setPreview(null);
+    const h = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (renaming) { setRenaming(false); return; }
+        if (preview) { setPreview(null); return; }
+        if (selected.size > 0) { setSelected(new Set()); return; }
+      }
+    };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
-  }, []);
+  }, [preview, renaming, selected]);
 
   async function loadCollections() {
     const res = await fetch('/api/collections');
@@ -80,11 +87,66 @@ export default function Home() {
     if (!res.ok) { alert('Cannot load file (may exceed 20 MB)'); return; }
     const { url } = await res.json();
     setPreview({ id: f.id, url, mime: f.mime_type, name: f.filename });
+    setRenaming(false);
     const cr = await fetch(`/api/files/${f.id}/collections`);
     if (cr.ok) {
       const data = await cr.json();
       setPreviewCollections(data.map((c: Collection) => c.id));
     }
+  }
+
+  function toggleSelect(id: number, e: React.MouseEvent) {
+    e.stopPropagation();
+    const next = new Set(selected);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setSelected(next);
+  }
+
+  function clearSelection() { setSelected(new Set()); }
+
+  async function bulkAddToCollection(collectionId: number) {
+    const ids = Array.from(selected);
+    if (ids.length === 0) return;
+    await fetch('/api/collections/bulk-add', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file_ids: ids, collection_id: collectionId }),
+    });
+    clearSelection();
+    loadCollections();
+    load(true);
+  }
+
+  async function bulkRemove() {
+    const ids = Array.from(selected);
+    if (ids.length === 0) return;
+    if (!confirm(`Remove ${ids.length} files from the dashboard? (Telegram is untouched.)`)) return;
+    for (const id of ids) {
+      await fetch(`/api/files/${id}/delete`, { method: 'DELETE' });
+    }
+    clearSelection();
+    load(true);
+  }
+
+  async function renameCurrent() {
+    if (!preview || !renameValue.trim()) { setRenaming(false); return; }
+    await fetch(`/api/files/${preview.id}/rename`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename: renameValue.trim() }),
+    });
+    setPreview({ ...preview, name: renameValue.trim() });
+    setRenaming(false);
+    load(true);
+  }
+
+  async function removeCurrent() {
+    if (!preview) return;
+    if (!confirm('Remove this file from the dashboard? (Telegram is untouched.)')) return;
+    await fetch(`/api/files/${preview.id}/delete`, { method: 'DELETE' });
+    setPreview(null);
+    load(true);
   }
 
   function resetForm() {
@@ -111,12 +173,8 @@ export default function Home() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: newName.trim(), is_smart: isSmart, rules }),
     });
-    if (res.ok) {
-      resetForm();
-      loadCollections();
-    } else {
-      alert('Failed to create collection');
-    }
+    if (res.ok) { resetForm(); loadCollections(); }
+    else alert('Failed to create collection');
   }
 
   async function deleteCollection(id: number, e: React.MouseEvent) {
@@ -143,38 +201,6 @@ export default function Home() {
     }
   }
 
-  async function sync() {
-    if (!confirm('Check every file against Telegram and remove any that were deleted there? This may take a minute.')) return;
-    setSyncing(true);
-    setSyncProgress('Loading file list...');
-    try {
-      const res = await fetch('/api/files/ids');
-      const all = await res.json();
-      const chunkSize = 20;
-      let removed = 0;
-      for (let i = 0; i < all.length; i += chunkSize) {
-        const chunk = all.slice(i, i + chunkSize);
-        setSyncProgress(`Checking ${i + chunk.length} / ${all.length}...`);
-        const r = await fetch('/api/sync', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ items: chunk }),
-        });
-        if (r.ok) {
-          const data = await r.json();
-          removed += data.removed.length;
-        }
-      }
-      alert(`Checked ${all.length} files. Removed ${removed}.`);
-      load(true);
-    } catch (e) {
-      alert('Sync failed');
-    } finally {
-      setSyncing(false);
-      setSyncProgress('');
-    }
-  }
-
   async function logout() {
     document.cookie = 'auth=; Max-Age=0; path=/';
     window.location.href = '/login';
@@ -189,7 +215,7 @@ export default function Home() {
         <h1 className="text-xl font-semibold mb-6">My Vault</h1>
 
         <button
-          onClick={() => setActiveCollection(null)}
+          onClick={() => { setActiveCollection(null); clearSelection(); }}
           className={`w-full text-left px-3 py-2 rounded mb-1 text-sm ${
             activeCollection === null ? 'bg-gray-800' : 'hover:bg-gray-800'
           }`}
@@ -202,7 +228,6 @@ export default function Home() {
           <button
             onClick={() => setShowCreate(true)}
             className="text-gray-400 hover:text-white text-lg leading-none"
-            title="New collection"
           >
             +
           </button>
@@ -215,7 +240,7 @@ export default function Home() {
               className={`group flex items-center justify-between px-3 py-2 rounded mb-0.5 cursor-pointer text-sm ${
                 activeCollection === c.id ? 'bg-gray-800' : 'hover:bg-gray-800'
               }`}
-              onClick={() => setActiveCollection(c.id)}
+              onClick={() => { setActiveCollection(c.id); clearSelection(); }}
             >
               <div className="flex items-center gap-2 min-w-0">
                 {c.is_smart ? (
@@ -226,47 +251,31 @@ export default function Home() {
                 <span className="truncate">{c.name}</span>
               </div>
               <div className="flex items-center gap-2 flex-shrink-0">
-                <span className="text-xs text-gray-500">
-                  {c.is_smart ? 'auto' : c.file_count}
-                </span>
+                <span className="text-xs text-gray-500">{c.is_smart ? 'auto' : c.file_count}</span>
                 <button
                   onClick={(e) => deleteCollection(c.id, e)}
                   className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-red-400 text-base leading-none"
-                  title="Delete"
                 >
                   ×
                 </button>
               </div>
             </div>
           ))}
-          {collections.length === 0 && (
-            <p className="text-xs text-gray-600 px-3">None yet — click +</p>
-          )}
+          {collections.length === 0 && <p className="text-xs text-gray-600 px-3">None yet — click +</p>}
         </div>
 
-        <div className="mt-4 px-3 flex flex-col gap-2">
-          <button
-            onClick={sync}
-            disabled={syncing}
-            className="text-xs text-gray-500 hover:text-white text-left disabled:opacity-50"
-          >
-            {syncing ? syncProgress || 'Syncing...' : '🔄 Sync with Telegram'}
-          </button>
-          <button
-            onClick={logout}
-            className="text-xs text-gray-500 hover:text-white text-left"
-          >
-            Logout
-          </button>
-        </div>
+        <button
+          onClick={logout}
+          className="text-xs text-gray-500 hover:text-white mt-4 text-left px-3"
+        >
+          Logout
+        </button>
       </aside>
 
       <main className="flex-1 p-6 overflow-y-auto">
         <div className="max-w-6xl mx-auto">
           <div className="flex items-center gap-3 mb-4">
-            <h2 className="text-2xl font-semibold">
-              {activeData ? activeData.name : 'All Files'}
-            </h2>
+            <h2 className="text-2xl font-semibold">{activeData ? activeData.name : 'All Files'}</h2>
             {activeData?.is_smart && (
               <span className="text-xs px-2 py-0.5 rounded bg-blue-900/50 text-blue-300 border border-blue-800">
                 ⚡ Smart — auto-updates
@@ -293,29 +302,44 @@ export default function Home() {
             </select>
           </div>
 
-          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3">
-            {files.map(f => (
-              <button
-                key={f.id}
-                onClick={() => open(f)}
-                className="bg-gray-900 border border-gray-800 rounded-lg p-3 text-left hover:border-blue-500 transition"
-              >
-                {f.mime_type.startsWith('image/') ? (
-                  <img
-                    src={`/api/files/${f.id}/thumb`}
-                    alt={f.filename}
-                    className="w-full h-32 object-cover rounded mb-2 bg-gray-800"
-                    loading="lazy"
-                  />
-                ) : (
-                  <div className="text-3xl mb-2 h-32 flex items-center justify-center bg-gray-800 rounded">
-                    {f.mime_type === 'application/pdf' ? '📄' : f.mime_type.startsWith('video/') ? '🎬' : '📎'}
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3 pb-24">
+            {files.map(f => {
+              const isSel = selected.has(f.id);
+              return (
+                <div
+                  key={f.id}
+                  onClick={() => open(f)}
+                  className={`relative group bg-gray-900 border rounded-lg p-3 text-left cursor-pointer transition ${
+                    isSel ? 'border-blue-500 ring-2 ring-blue-500/40' : 'border-gray-800 hover:border-blue-500'
+                  }`}
+                >
+                  <div
+                    onClick={(e) => toggleSelect(f.id, e)}
+                    className={`absolute top-2 right-2 w-6 h-6 rounded-full border-2 flex items-center justify-center text-xs font-bold transition z-10 ${
+                      isSel
+                        ? 'bg-blue-500 border-blue-500 text-white'
+                        : 'bg-black/60 border-white/40 hover:border-white opacity-0 group-hover:opacity-100'
+                    }`}
+                  >
+                    {isSel ? '✓' : ''}
                   </div>
-                )}
-                <div className="text-sm truncate">{f.filename}</div>
-                <div className="text-xs text-gray-500 mt-1">{(f.size_bytes / 1024).toFixed(0)} KB</div>
-              </button>
-            ))}
+                  {f.mime_type.startsWith('image/') ? (
+                    <img
+                      src={`/api/files/${f.id}/thumb`}
+                      alt={f.filename}
+                      className="w-full h-32 object-cover rounded mb-2 bg-gray-800"
+                      loading="lazy"
+                    />
+                  ) : (
+                    <div className="text-3xl mb-2 h-32 flex items-center justify-center bg-gray-800 rounded">
+                      {f.mime_type === 'application/pdf' ? '📄' : f.mime_type.startsWith('video/') ? '🎬' : '📎'}
+                    </div>
+                  )}
+                  <div className="text-sm truncate">{f.filename}</div>
+                  <div className="text-xs text-gray-500 mt-1">{(f.size_bytes / 1024).toFixed(0)} KB</div>
+                </div>
+              );
+            })}
           </div>
 
           {hasMore && (
@@ -332,7 +356,7 @@ export default function Home() {
             <p className="text-gray-500 text-center mt-12">
               {activeCollection
                 ? activeData?.is_smart
-                  ? 'No files match these rules yet. New files will appear here automatically.'
+                  ? 'No files match these rules yet.'
                   : 'No files in this collection yet. Open any file and add it here.'
                 : 'No files yet. Post a file in your Telegram group.'}
             </p>
@@ -340,15 +364,39 @@ export default function Home() {
         </div>
       </main>
 
-      {showCreate && (
-        <div
-          onClick={resetForm}
-          className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
-        >
-          <div
-            onClick={e => e.stopPropagation()}
-            className="bg-gray-900 border border-gray-800 rounded-lg p-6 w-full max-w-md"
+      {/* Selection action bar */}
+      {selected.size > 0 && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 bg-gray-900 border border-gray-700 rounded-lg shadow-2xl px-4 py-3 flex items-center gap-3 z-40">
+          <span className="text-sm font-medium">{selected.size} selected</span>
+          <select
+            onChange={(e) => { if (e.target.value) { bulkAddToCollection(Number(e.target.value)); e.target.value = ''; } }}
+            className="text-sm bg-gray-800 border border-gray-700 rounded px-2 py-1"
+            defaultValue=""
           >
+            <option value="">Add to collection...</option>
+            {manualCollections.map(c => (
+              <option key={c.id} value={c.id}>{c.name}</option>
+            ))}
+          </select>
+          <button
+            onClick={bulkRemove}
+            className="text-sm text-red-400 hover:text-red-300"
+          >
+            Remove
+          </button>
+          <button
+            onClick={clearSelection}
+            className="text-sm text-gray-400 hover:text-white"
+          >
+            Clear
+          </button>
+        </div>
+      )}
+
+      {/* Create collection modal */}
+      {showCreate && (
+        <div onClick={resetForm} className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+          <div onClick={e => e.stopPropagation()} className="bg-gray-900 border border-gray-800 rounded-lg p-6 w-full max-w-md">
             <h3 className="text-lg font-semibold mb-4">New Collection</h3>
 
             <input
@@ -360,21 +408,18 @@ export default function Home() {
             />
 
             <button
-  type="button"
-  onClick={() => setIsSmart(!isSmart)}
-  className={`w-full flex items-center justify-between p-3 rounded border mb-4 transition ${
-    isSmart
-      ? 'bg-blue-950/40 border-blue-600'
-      : 'bg-gray-800 border-gray-700 hover:border-gray-600'
-  }`}
->
-  <span className="font-medium flex items-center gap-2">
-    ⚡ Smart collection
-  </span>
-  <span className={`text-xs ${isSmart ? 'text-blue-300' : 'text-gray-500'}`}>
-    {isSmart ? 'ON — auto-captures' : 'OFF — manual only'}
-  </span>
-</button>
+              type="button"
+              onClick={() => setIsSmart(!isSmart)}
+              className={`w-full flex items-center justify-between p-3 rounded border mb-4 transition ${
+                isSmart ? 'bg-blue-950/40 border-blue-600' : 'bg-gray-800 border-gray-700 hover:border-gray-600'
+              }`}
+            >
+              <span className="font-medium">⚡ Smart collection</span>
+              <span className={`text-xs ${isSmart ? 'text-blue-300' : 'text-gray-500'}`}>
+                {isSmart ? 'ON — auto-captures' : 'OFF — manual only'}
+              </span>
+            </button>
+
             {isSmart && (
               <div className="space-y-3 mb-4 p-3 bg-gray-950 rounded border border-gray-800">
                 <div>
@@ -390,7 +435,6 @@ export default function Home() {
                     <option value="pdf">PDFs</option>
                   </select>
                 </div>
-
                 <div>
                   <label className="text-xs text-gray-500 block mb-1">Filename contains</label>
                   <input
@@ -400,7 +444,6 @@ export default function Home() {
                     className="w-full px-2 py-1.5 rounded bg-gray-800 border border-gray-700 text-sm"
                   />
                 </div>
-
                 <div className="flex gap-2">
                   <div className="flex-1">
                     <label className="text-xs text-gray-500 block mb-1">Min size (MB)</label>
@@ -427,10 +470,7 @@ export default function Home() {
             )}
 
             <div className="flex justify-end gap-2">
-              <button
-                onClick={resetForm}
-                className="px-4 py-2 text-sm text-gray-400 hover:text-white"
-              >
+              <button onClick={resetForm} className="px-4 py-2 text-sm text-gray-400 hover:text-white">
                 Cancel
               </button>
               <button
@@ -445,6 +485,7 @@ export default function Home() {
         </div>
       )}
 
+      {/* Preview modal */}
       {preview && (
         <div
           onClick={() => setPreview(null)}
@@ -468,20 +509,32 @@ export default function Home() {
             )}
 
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center mt-3 gap-3 w-full max-w-5xl">
-              <span className="text-sm text-gray-400 truncate">{preview.name}</span>
-              <div className="flex items-center gap-4">
+              {renaming ? (
+                <input
+                  autoFocus
+                  value={renameValue}
+                  onChange={e => setRenameValue(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') renameCurrent();
+                    if (e.key === 'Escape') setRenaming(false);
+                  }}
+                  onBlur={renameCurrent}
+                  className="flex-1 px-2 py-1 rounded bg-gray-800 border border-blue-500 text-sm outline-none"
+                />
+              ) : (
+                <span
+                  onClick={() => { setRenameValue(preview.name); setRenaming(true); }}
+                  className="text-sm text-gray-400 truncate cursor-pointer hover:text-white hover:underline flex-1"
+                  title="Click to rename"
+                >
+                  {preview.name}
+                </span>
+              )}
+              <div className="flex items-center gap-4 flex-shrink-0">
                 <a href={preview.url} download={preview.name} className="text-sm text-blue-400 hover:underline">
                   Download
                 </a>
-                <button
-                  onClick={async () => {
-                    if (!confirm('Remove from dashboard? (This does not delete the file in Telegram.)')) return;
-                    await fetch(`/api/files/${preview.id}/delete`, { method: 'DELETE' });
-                    setPreview(null);
-                    load(true);
-                  }}
-                  className="text-sm text-red-400 hover:text-red-300 hover:underline"
-                >
+                <button onClick={removeCurrent} className="text-sm text-red-400 hover:text-red-300">
                   Remove
                 </button>
               </div>
