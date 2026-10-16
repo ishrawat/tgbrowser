@@ -7,6 +7,7 @@ export async function GET(req: Request) {
   const offset = (page - 1) * limit;
   const q = searchParams.get('q')?.trim();
   const type = searchParams.get('type');
+  const collection = searchParams.get('collection');
 
   const where: string[] = [];
   const params: any[] = [];
@@ -16,7 +17,13 @@ export async function GET(req: Request) {
     where.push(`(filename ILIKE $${params.length} OR caption ILIKE $${params.length})`);
   }
   if (type === 'image') where.push(`mime_type LIKE 'image/%'`);
+  if (type === 'video') where.push(`mime_type LIKE 'video/%'`);
   if (type === 'pdf') where.push(`mime_type = 'application/pdf'`);
+
+  if (collection) {
+    params.push(Number(collection));
+    where.push(`EXISTS (SELECT 1 FROM file_collections fc WHERE fc.file_id = files.id AND fc.collection_id = $${params.length})`);
+  }
 
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
