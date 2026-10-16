@@ -426,9 +426,22 @@ export default function Home() {
 
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center mt-3 gap-3 w-full max-w-5xl">
               <span className="text-sm text-gray-400 truncate">{preview.name}</span>
-              <a href={preview.url} download={preview.name} className="text-sm text-blue-400 hover:underline">
-                Download
-              </a>
+              <div className="flex items-center gap-4">
+                <a href={preview.url} download={preview.name} className="text-sm text-blue-400 hover:underline">
+                  Download
+                </a>
+                <button
+                  onClick={async () => {
+                    if (!confirm('Remove from dashboard? (This does not delete the file in Telegram.)')) return;
+                    await fetch(`/api/files/${preview.id}/delete`, { method: 'DELETE' });
+                    setPreview(null);
+                    load(true);
+                  }}
+                  className="text-sm text-red-400 hover:text-red-300 hover:underline"
+                >
+                  Remove
+                </button>
+              </div>
             </div>
 
             {manualCollections.length > 0 && (
