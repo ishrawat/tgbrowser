@@ -40,6 +40,7 @@ export default function Home() {
   const [renameValue, setRenameValue] = useState('');
   const [menu, setMenu] = useState<Menu | null>(null);
   const [menuSub, setMenuSub] = useState(false);
+  const [menuMoveSub, setMenuMoveSub] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const longPressRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -206,6 +207,26 @@ export default function Home() {
       body: JSON.stringify({ file_ids: [f.id], collection_id: collectionId }),
     });
     loadCollections();
+  }
+
+  async function moveFileToCollection(f: File, targetId: number) {
+    if (activeCollection) {
+      const current = collections.find(c => c.id === activeCollection);
+      if (current && !current.is_smart) {
+        await fetch('/api/collections/toggle', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ file_id: f.id, collection_id: activeCollection }),
+        });
+      }
+    }
+    await fetch('/api/collections/bulk-add', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file_ids: [f.id], collection_id: targetId }),
+    });
+    loadCollections();
+    load(true);
   }
 
   function openMenu(f: File, x: number, y: number) {
@@ -524,6 +545,34 @@ export default function Home() {
                     <button
                       key={c.id}
                       onClick={() => { addFileToCollection(menu.file, c.id); setMenu(null); }}
+                      className="w-full text-left px-3 py-2 hover:bg-gray-800 flex items-center gap-2"
+                    >
+                      <span className="w-2 h-2 rounded-full" style={{ background: c.color }} />
+                      <span className="truncate">{c.name}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {activeCollection !== null &&
+           !collections.find(c => c.id === activeCollection)?.is_smart &&
+           manualCollections.some(c => c.id !== activeCollection) && (
+            <div className="relative">
+              <button
+                onClick={() => setMenuMoveSub(!menuMoveSub)}
+                className="w-full text-left px-3 py-2 hover:bg-gray-800 flex justify-between items-center"
+              >
+                <span>Move to collection</span>
+                <span className="text-gray-500">›</span>
+              </button>
+              {menuMoveSub && (
+                <div className="absolute left-full top-0 ml-1 bg-gray-900 border border-gray-700 rounded-lg shadow-2xl py-1 w-48 max-h-60 overflow-y-auto">
+                  {manualCollections.filter(c => c.id !== activeCollection).map(c => (
+                    <button
+                      key={c.id}
+                      onClick={() => { moveFileToCollection(menu.file, c.id); setMenu(null); }}
                       className="w-full text-left px-3 py-2 hover:bg-gray-800 flex items-center gap-2"
                     >
                       <span className="w-2 h-2 rounded-full" style={{ background: c.color }} />
