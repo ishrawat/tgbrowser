@@ -34,7 +34,6 @@ export default function Home() {
   const [previewCollections, setPreviewCollections] = useState<number[]>([]);
   const [showCreate, setShowCreate] = useState(false);
 
-  // New collection form state
   const [newName, setNewName] = useState('');
   const [isSmart, setIsSmart] = useState(false);
   const [ruleType, setRuleType] = useState<RuleType>('');
@@ -113,6 +112,8 @@ export default function Home() {
     if (res.ok) {
       resetForm();
       loadCollections();
+    } else {
+      alert('Failed to create collection');
     }
   }
 
@@ -146,10 +147,10 @@ export default function Home() {
   }
 
   const activeData = collections.find(c => c.id === activeCollection);
+  const manualCollections = collections.filter(c => !c.is_smart);
 
   return (
     <div className="min-h-screen bg-gray-950 text-white flex">
-      {/* Sidebar */}
       <aside className="hidden md:flex w-64 bg-gray-900 border-r border-gray-800 p-4 flex-col">
         <h1 className="text-xl font-semibold mb-6">My Vault</h1>
 
@@ -217,7 +218,6 @@ export default function Home() {
         </button>
       </aside>
 
-      {/* Main */}
       <main className="flex-1 p-6 overflow-y-auto">
         <div className="max-w-6xl mx-auto">
           <div className="flex items-center gap-3 mb-4">
@@ -297,7 +297,6 @@ export default function Home() {
         </div>
       </main>
 
-      {/* Create Collection Modal */}
       {showCreate && (
         <div
           onClick={resetForm}
@@ -317,13 +316,15 @@ export default function Home() {
               className="w-full px-3 py-2 rounded bg-gray-800 border border-gray-700 focus:border-blue-500 outline-none mb-4"
             />
 
-            <label className="flex items-center gap-2 text-sm mb-4 cursor-pointer">
+            <label className="flex items-center gap-3 text-sm mb-4 cursor-pointer p-3 bg-gray-800 rounded border border-gray-700 hover:border-blue-500">
               <input
                 type="checkbox"
                 checked={isSmart}
                 onChange={e => setIsSmart(e.target.checked)}
+                className="w-5 h-5 accent-blue-500 cursor-pointer"
               />
-              <span>⚡ Smart — auto-capture new files by rules</span>
+              <span className="font-medium">⚡ Smart collection</span>
+              <span className="text-gray-500 text-xs ml-auto">auto-capture new files</span>
             </label>
 
             {isSmart && (
@@ -396,7 +397,6 @@ export default function Home() {
         </div>
       )}
 
-      {/* Preview Modal */}
       {preview && (
         <div
           onClick={() => setPreview(null)}
@@ -426,10 +426,10 @@ export default function Home() {
               </a>
             </div>
 
-            {collections.filter(c => !c.is_smart).length > 0 && (
+            {manualCollections.length > 0 && (
               <div className="flex flex-wrap items-center gap-2 mt-3 w-full max-w-5xl">
                 <span className="text-xs text-gray-500">Add to:</span>
-                {collections.filter(c => !c.is_smart).map(c => {
+                {manualCollections.map(c => {
                   const isIn = previewCollections.includes(c.id);
                   return (
                     <button
