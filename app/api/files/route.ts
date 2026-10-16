@@ -32,9 +32,14 @@ export async function GET(req: Request) {
   const where: string[] = [];
   const params: any[] = [];
 
+  
+    const searchContent = searchParams.get('searchContent') === 'true';
   if (q) {
     params.push(`%${q}%`);
-    where.push(`(filename ILIKE $${params.length} OR caption ILIKE $${params.length})`);
+    const cond = searchContent
+      ? `(filename ILIKE $${params.length} OR caption ILIKE $${params.length} OR content_text ILIKE $${params.length})`
+      : `(filename ILIKE $${params.length} OR caption ILIKE $${params.length})`;
+    where.push(cond);
   }
   if (type === 'image') where.push(`mime_type LIKE 'image/%'`);
   if (type === 'video') where.push(`mime_type LIKE 'video/%'`);

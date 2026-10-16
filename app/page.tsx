@@ -28,9 +28,16 @@ type Stats = {
   starred: number;
 };
 
+type DupGroup = {
+  size_bytes: number;
+  count: number;
+  files: File[];
+};
+
 type RuleType = '' | 'image' | 'video' | 'pdf';
 type ViewMode = 'grid' | 'list';
 type Menu = { x: number; y: number; file: File };
+type PageView = 'files' | 'duplicates';
 
 const SORTS = [
   { value: 'date_desc', label: 'Newest first' },
@@ -54,10 +61,7 @@ function groupByDate(files: File[]) {
   const yesterday = new Date(today); yesterday.setDate(today.getDate() - 1);
   const weekAgo = new Date(today); weekAgo.setDate(today.getDate() - 7);
   const monthAgo = new Date(today); monthAgo.setDate(today.getDate() - 30);
-
-  const buckets: Record<string, File[]> = {
-    Today: [], Yesterday: [], 'This Week': [], 'This Month': [], Earlier: [],
-  };
+  const buckets: Record<string, File[]> = { Today: [], Yesterday: [], 'This Week': [], 'This Month': [], Earlier: [] };
   for (const f of files) {
     const d = new Date(f.telegram_date);
     const day = new Date(d.getFullYear(), d.getMonth(), d.getDate());
@@ -67,9 +71,7 @@ function groupByDate(files: File[]) {
     else if (day >= monthAgo) buckets['This Month'].push(f);
     else buckets.Earlier.push(f);
   }
-  return Object.entries(buckets)
-    .filter(([, fs]) => fs.length > 0)
-    .map(([label, fs]) => ({ label, files: fs }));
+  return Object.entries(buckets).filter(([, fs]) => fs.length > 0).map(([label, fs]) => ({ label, files: fs }));
 }
 
 export default function Home() {
@@ -78,8 +80,11 @@ export default function Home() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [activeCollection, setActiveCollection] = useState<number | null>(null);
   const [showStarred, setShowStarred] = useState(false);
+  const [view, setView] = useState<PageView>('files');
+  const [duplicates, setDuplicates] = useState<DupGroup[]>([]);
   const [q, setQ] = useState('');
   const [debouncedQ, setDebouncedQ] = useState('');
+  const [searchContent, setSearchContent] = useState(false);
   const [type, setType] = useState('');
   const [sort, setSort] = useState('date_desc');
   const [viewMode, setViewMode] = useState<ViewMode>('grid');
@@ -98,9 +103,11 @@ export default function Home() {
   const [menuMoveSub, setMenuMoveSub] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [recent, setRecent] = useState<File[]>([]);
+  const [extracting, setExtracting] = useState(false);
+  const [extractProgress, setExtractProgress] = useState('');
+  const [mounted, setMounted] = useState(false);
   const longPressRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
-  const [mounted, setMounted] = useState(false);
 
   const [newName, setNewName] = useState('');
   const [isSmart, setIsSmart] = useState(false);
@@ -115,14 +122,10 @@ export default function Home() {
     const saved = localStorage.getItem('viewMode') as ViewMode | null;
     if (saved === 'grid' || saved === 'list') setViewMode(saved);
     const r = localStorage.getItem('recent');
-    if (r) {
-      try { setRecent(JSON.parse(r)); } catch {}
-    }
+    if (r) { try { setRecent(JSON.parse(r)); } catch {} }
   }, []);
 
-  useEffect(() => {
-    if (mounted) localStorage.setItem('viewMode', viewMode);
-  }, [viewMode, mounted]);
+  useEffect(() => { if (mounted) localStorage.setItem('viewMode', viewMode); }, [viewMode, mounted]);
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedQ(q), 300);
@@ -133,7 +136,6 @@ export default function Home() {
     const h = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
       const inInput = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
-
       if (e.key === 'Escape') {
         if (menu) { setMenu(null); setMenuSub(false); setMenuMoveSub(false); return; }
         if (renaming) { setRenaming(false); return; }
@@ -157,10 +159,7 @@ export default function Home() {
     if (menu) {
       window.addEventListener('click', close);
       window.addEventListener('scroll', close, true);
-      return () => {
-        window.removeEventListener('click', close);
-        window.removeEventListener('scroll', close, true);
-      };
+      return () => { window.removeEventListener('click', close); window.removeEventListener('scroll', close, true); };
     }
   }, [menu]);
 
@@ -168,10 +167,13 @@ export default function Home() {
     const res = await fetch('/api/collections');
     if (res.ok) setCollections(await res.json());
   }
-
   async function loadStats() {
     const res = await fetch('/api/stats');
     if (res.ok) setStats(await res.json());
+  }
+  async function loadDuplicates() {
+    const res = await fetch('/api/duplicates');
+    if (res.ok) setDuplicates(await res.json());
   }
 
   async function load(reset = false) {
@@ -180,6 +182,7 @@ export default function Home() {
     const params = new URLSearchParams({ page: String(p), q: debouncedQ, type, sort });
     if (activeCollection) params.set('collection', String(activeCollection));
     if (showStarred) params.set('starred', 'true');
+    if (searchContent) params.set('searchContent', 'true');
     const res = await fetch(`/api/files?${params}`);
     const data = await res.json();
     setFiles(reset ? data.files : [...files, ...data.files]);
@@ -189,8 +192,12 @@ export default function Home() {
     setInitialLoad(false);
   }
 
-  useEffect(() => { load(true); }, [debouncedQ, type, activeCollection, sort, showStarred]);
+  useEffect(() => { load(true); }, [debouncedQ, type, activeCollection, sort, showStarred, searchContent]);
   useEffect(() => { loadCollections(); loadStats(); }, []);
+
+  useEffect(() => {
+    if (view === 'duplicates') loadDuplicates();
+  }, [view]);
 
   function addToRecent(f: File) {
     const next = [f, ...recent.filter(r => r.id !== f.id)].slice(0, 8);
@@ -228,53 +235,41 @@ export default function Home() {
     else next.add(id);
     setSelected(next);
   }
-
   function clearSelection() { setSelected(new Set()); }
 
   async function bulkAddToCollection(collectionId: number) {
     const ids = Array.from(selected);
     if (ids.length === 0) return;
     await fetch('/api/collections/bulk-add', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ file_ids: ids, collection_id: collectionId }),
     });
-    clearSelection();
-    loadCollections();
-    load(true);
+    clearSelection(); loadCollections(); load(true);
   }
 
   async function bulkRemove() {
     const ids = Array.from(selected);
     if (ids.length === 0) return;
     if (!confirm(`Remove ${ids.length} files from the dashboard?`)) return;
-    for (const id of ids) {
-      await fetch(`/api/files/${id}/delete`, { method: 'DELETE' });
-    }
-    clearSelection();
-    load(true);
-    loadStats();
+    for (const id of ids) await fetch(`/api/files/${id}/delete`, { method: 'DELETE' });
+    clearSelection(); load(true); loadStats();
   }
 
   async function renameCurrent() {
     if (!preview || !renameValue.trim()) { setRenaming(false); return; }
     await fetch(`/api/files/${preview.id}/rename`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ filename: renameValue.trim() }),
     });
     setPreview({ ...preview, name: renameValue.trim() });
-    setRenaming(false);
-    load(true);
+    setRenaming(false); load(true);
   }
 
   async function removeCurrent() {
     if (!preview) return;
     if (!confirm('Remove this file from the dashboard?')) return;
     await fetch(`/api/files/${preview.id}/delete`, { method: 'DELETE' });
-    setPreview(null);
-    load(true);
-    loadStats();
+    setPreview(null); load(true); loadStats();
   }
 
   async function toggleStar(f: File, e?: React.MouseEvent) {
@@ -284,9 +279,7 @@ export default function Home() {
       const { starred } = await res.json();
       setFiles(prev => prev.map(x => x.id === f.id ? { ...x, starred } : x));
       loadStats();
-      if (showStarred && !starred) {
-        setFiles(prev => prev.filter(x => x.id !== f.id));
-      }
+      if (showStarred && !starred) setFiles(prev => prev.filter(x => x.id !== f.id));
     }
   }
 
@@ -294,8 +287,7 @@ export default function Home() {
     const next = prompt('New name', f.filename);
     if (!next || next === f.filename) return;
     await fetch(`/api/files/${f.id}/rename`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ filename: next }),
     });
     load(true);
@@ -304,8 +296,7 @@ export default function Home() {
   async function removeFileById(f: File) {
     if (!confirm(`Remove "${f.filename}" from dashboard?`)) return;
     await fetch(`/api/files/${f.id}/delete`, { method: 'DELETE' });
-    load(true);
-    loadStats();
+    load(true); loadStats();
   }
 
   async function copyLink(f: File) {
@@ -318,8 +309,7 @@ export default function Home() {
 
   async function addFileToCollection(f: File, collectionId: number) {
     await fetch('/api/collections/bulk-add', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ file_ids: [f.id], collection_id: collectionId }),
     });
     loadCollections();
@@ -330,53 +320,34 @@ export default function Home() {
       const current = collections.find(c => c.id === activeCollection);
       if (current && !current.is_smart) {
         await fetch('/api/collections/toggle', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ file_id: f.id, collection_id: activeCollection }),
         });
       }
     }
     await fetch('/api/collections/bulk-add', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ file_ids: [f.id], collection_id: targetId }),
     });
-    loadCollections();
-    load(true);
+    loadCollections(); load(true);
   }
 
   function openMenu(f: File, x: number, y: number) {
-    setMenu({ x, y, file: f });
-    setMenuSub(false);
-    setMenuMoveSub(false);
+    setMenu({ x, y, file: f }); setMenuSub(false); setMenuMoveSub(false);
   }
-
-  function handleContextMenu(e: React.MouseEvent, f: File) {
-    e.preventDefault();
-    openMenu(f, e.clientX, e.clientY);
-  }
-
+  function handleContextMenu(e: React.MouseEvent, f: File) { e.preventDefault(); openMenu(f, e.clientX, e.clientY); }
   function handleTouchStart(e: React.TouchEvent, f: File) {
     const t = e.touches[0];
     const x = t.clientX, y = t.clientY;
     longPressRef.current = setTimeout(() => openMenu(f, x, y), 500);
   }
-
   function handleTouchEnd() {
-    if (longPressRef.current) {
-      clearTimeout(longPressRef.current);
-      longPressRef.current = null;
-    }
+    if (longPressRef.current) { clearTimeout(longPressRef.current); longPressRef.current = null; }
   }
 
   function resetForm() {
-    setNewName('');
-    setIsSmart(false);
-    setRuleType('');
-    setRuleName('');
-    setRuleSizeMin('');
-    setRuleSizeMax('');
-    setShowCreate(false);
+    setNewName(''); setIsSmart(false); setRuleType(''); setRuleName('');
+    setRuleSizeMin(''); setRuleSizeMax(''); setShowCreate(false);
   }
 
   async function createCollection() {
@@ -387,10 +358,8 @@ export default function Home() {
       sizeMin: ruleSizeMin ? Number(ruleSizeMin) * 1024 * 1024 : undefined,
       sizeMax: ruleSizeMax ? Number(ruleSizeMax) * 1024 * 1024 : undefined,
     } : undefined;
-
     const res = await fetch('/api/collections', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: newName.trim(), is_smart: isSmart, rules }),
     });
     if (res.ok) { resetForm(); loadCollections(); }
@@ -402,22 +371,44 @@ export default function Home() {
     if (!confirm('Delete this collection?')) return;
     await fetch(`/api/collections?id=${id}`, { method: 'DELETE' });
     if (activeCollection === id) setActiveCollection(null);
-    loadCollections();
-    load(true);
+    loadCollections(); load(true);
   }
 
   async function toggleInCollection(fileId: number, collectionId: number) {
     const res = await fetch('/api/collections/toggle', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ file_id: fileId, collection_id: collectionId }),
     });
     if (res.ok) {
       const { in: isIn } = await res.json();
-      setPreviewCollections(prev =>
-        isIn ? [...prev, collectionId] : prev.filter(id => id !== collectionId)
-      );
+      setPreviewCollections(prev => isIn ? [...prev, collectionId] : prev.filter(id => id !== collectionId));
       loadCollections();
+    }
+  }
+
+  async function extractAllPdfs() {
+    if (!confirm('Extract text from all PDFs? This makes them searchable. May take a while for many PDFs.')) return;
+    setExtracting(true);
+    setExtractProgress('Loading list...');
+    try {
+      const res = await fetch('/api/files/pending-extract');
+      const pending = await res.json();
+      if (pending.length === 0) {
+        alert('All PDFs are already extracted.');
+        setExtracting(false); setExtractProgress(''); return;
+      }
+      let done = 0, failed = 0;
+      for (const f of pending) {
+        setExtractProgress(`Extracting ${done + failed + 1} / ${pending.length}...`);
+        const r = await fetch(`/api/files/${f.id}/extract`, { method: 'POST' });
+        if (r.ok) done++;
+        else failed++;
+      }
+      alert(`Done. Extracted: ${done}. Failed: ${failed}.`);
+    } catch (e) {
+      alert('Extraction failed');
+    } finally {
+      setExtracting(false); setExtractProgress('');
     }
   }
 
@@ -429,19 +420,21 @@ export default function Home() {
   const activeData = collections.find(c => c.id === activeCollection);
   const manualCollections = collections.filter(c => !c.is_smart);
   const grouped = useMemo(() => (mounted ? groupByDate(files) : []), [files, mounted]);
-  const useGrouping = mounted && viewMode === 'grid' && (sort === 'date_desc' || sort === 'date_asc');
+  const useGrouping = mounted && view === 'files' && viewMode === 'grid' && (sort === 'date_desc' || sort === 'date_asc');
 
   const previewIndex = preview ? files.findIndex(f => f.id === preview.id) : -1;
   const canPrev = previewIndex > 0;
   const canNext = previewIndex >= 0 && previewIndex < files.length - 1;
 
-  const title = showStarred ? 'Starred' : activeData ? activeData.name : 'All Files';
+  const title = view === 'duplicates'
+    ? '🔁 Duplicates'
+    : showStarred
+      ? '⭐ Starred'
+      : activeData ? activeData.name : 'All Files';
 
   return (
     <div className="min-h-screen bg-gray-950 text-white flex">
-      {sidebarOpen && (
-        <div onClick={() => setSidebarOpen(false)} className="md:hidden fixed inset-0 bg-black/60 z-30" />
-      )}
+      {sidebarOpen && <div onClick={() => setSidebarOpen(false)} className="md:hidden fixed inset-0 bg-black/60 z-30" />}
 
       <aside className={`fixed md:static top-0 left-0 h-full w-64 bg-gray-900 border-r border-gray-800 p-4 flex flex-col z-40 transition-transform duration-200 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0`}>
         <div className="flex justify-between items-center mb-6">
@@ -450,23 +443,26 @@ export default function Home() {
         </div>
 
         <button
-          onClick={() => { setActiveCollection(null); setShowStarred(false); clearSelection(); setSidebarOpen(false); }}
-          className={`w-full text-left px-3 py-2 rounded mb-1 text-sm ${
-            activeCollection === null && !showStarred ? 'bg-gray-800' : 'hover:bg-gray-800'
-          }`}
+          onClick={() => { setActiveCollection(null); setShowStarred(false); setView('files'); clearSelection(); setSidebarOpen(false); }}
+          className={`w-full text-left px-3 py-2 rounded mb-1 text-sm ${activeCollection === null && !showStarred && view === 'files' ? 'bg-gray-800' : 'hover:bg-gray-800'}`}
         >
           📁 All Files
           {stats && <span className="float-right text-xs text-gray-500">{stats.total_files}</span>}
         </button>
 
         <button
-          onClick={() => { setActiveCollection(null); setShowStarred(true); clearSelection(); setSidebarOpen(false); }}
-          className={`w-full text-left px-3 py-2 rounded mb-1 text-sm ${
-            showStarred ? 'bg-gray-800' : 'hover:bg-gray-800'
-          }`}
+          onClick={() => { setActiveCollection(null); setShowStarred(true); setView('files'); clearSelection(); setSidebarOpen(false); }}
+          className={`w-full text-left px-3 py-2 rounded mb-1 text-sm ${showStarred && view === 'files' ? 'bg-gray-800' : 'hover:bg-gray-800'}`}
         >
           ⭐ Starred
           {stats && <span className="float-right text-xs text-gray-500">{stats.starred}</span>}
+        </button>
+
+        <button
+          onClick={() => { setView('duplicates'); setSidebarOpen(false); }}
+          className={`w-full text-left px-3 py-2 rounded mb-1 text-sm ${view === 'duplicates' ? 'bg-gray-800' : 'hover:bg-gray-800'}`}
+        >
+          🔁 Duplicates
         </button>
 
         <div className="mt-6 mb-2 flex justify-between items-center px-3">
@@ -478,10 +474,8 @@ export default function Home() {
           {collections.map(c => (
             <div
               key={c.id}
-              className={`group flex items-center justify-between px-3 py-2 rounded mb-0.5 cursor-pointer text-sm ${
-                activeCollection === c.id && !showStarred ? 'bg-gray-800' : 'hover:bg-gray-800'
-              }`}
-              onClick={() => { setActiveCollection(c.id); setShowStarred(false); clearSelection(); setSidebarOpen(false); }}
+              className={`group flex items-center justify-between px-3 py-2 rounded mb-0.5 cursor-pointer text-sm ${activeCollection === c.id && view === 'files' && !showStarred ? 'bg-gray-800' : 'hover:bg-gray-800'}`}
+              onClick={() => { setActiveCollection(c.id); setShowStarred(false); setView('files'); clearSelection(); setSidebarOpen(false); }}
             >
               <div className="flex items-center gap-2 min-w-0">
                 {c.is_smart ? <span className="text-xs">⚡</span> : <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: c.color }} />}
@@ -489,12 +483,7 @@ export default function Home() {
               </div>
               <div className="flex items-center gap-2 flex-shrink-0">
                 <span className="text-xs text-gray-500">{c.is_smart ? 'auto' : c.file_count}</span>
-                <button
-                  onClick={(e) => deleteCollection(c.id, e)}
-                  className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-red-400 text-base leading-none"
-                >
-                  ×
-                </button>
+                <button onClick={(e) => deleteCollection(c.id, e)} className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-red-400 text-base leading-none">×</button>
               </div>
             </div>
           ))}
@@ -503,183 +492,153 @@ export default function Home() {
 
         {recent.length > 0 && (
           <>
-            <div className="mt-4 mb-2 px-3">
-              <span className="text-xs uppercase text-gray-500 font-semibold tracking-wider">Recent</span>
-            </div>
+            <div className="mt-4 mb-2 px-3"><span className="text-xs uppercase text-gray-500 font-semibold tracking-wider">Recent</span></div>
             <div className="max-h-32 overflow-y-auto">
               {recent.slice(0, 6).map(r => (
-                <button
-                  key={r.id}
-                  onClick={() => open(r)}
-                  className="w-full text-left px-3 py-1.5 text-xs text-gray-400 hover:text-white hover:bg-gray-800 rounded truncate"
-                  title={r.filename}
-                >
-                  {r.filename}
-                </button>
+                <button key={r.id} onClick={() => open(r)} className="w-full text-left px-3 py-1.5 text-xs text-gray-400 hover:text-white hover:bg-gray-800 rounded truncate" title={r.filename}>{r.filename}</button>
               ))}
             </div>
           </>
         )}
 
-        <button onClick={logout} className="text-xs text-gray-500 hover:text-white mt-4 text-left px-3">
-          Logout
-        </button>
+        <div className="mt-4 px-3 flex flex-col gap-2">
+          <button
+            onClick={extractAllPdfs}
+            disabled={extracting}
+            className="text-xs text-gray-500 hover:text-white text-left disabled:opacity-50"
+          >
+            {extracting ? extractProgress : '📝 Extract PDF text'}
+          </button>
+          <button onClick={logout} className="text-xs text-gray-500 hover:text-white text-left">Logout</button>
+        </div>
       </aside>
 
       <main className="flex-1 min-w-0 p-3 md:p-6 overflow-y-auto">
         <div className="max-w-6xl mx-auto">
           <div className="flex items-center gap-2 md:gap-3 mb-4">
-            <button
-              onClick={() => setSidebarOpen(true)}
-              className="md:hidden text-2xl leading-none w-9 h-9 flex items-center justify-center rounded bg-gray-900 border border-gray-800"
-            >
-              ☰
-            </button>
+            <button onClick={() => setSidebarOpen(true)} className="md:hidden text-2xl leading-none w-9 h-9 flex items-center justify-center rounded bg-gray-900 border border-gray-800">☰</button>
             <h2 className="text-xl md:text-2xl font-semibold truncate">{title}</h2>
-            {activeData?.is_smart && (
-              <span className="hidden md:inline text-xs px-2 py-0.5 rounded bg-blue-900/50 text-blue-300 border border-blue-800">
-                ⚡ Smart
-              </span>
+            {activeData?.is_smart && view === 'files' && (
+              <span className="hidden md:inline text-xs px-2 py-0.5 rounded bg-blue-900/50 text-blue-300 border border-blue-800">⚡ Smart</span>
             )}
-            {stats && (
+            {stats && view === 'files' && (
               <span className="hidden md:inline text-xs text-gray-500 ml-auto">
-                {stats.total_files} files · {formatSize(Number(stats.total_bytes))} ·{' '}
-                {stats.images} img · {stats.pdfs} pdf · {stats.videos} vid
+                {stats.total_files} files · {formatSize(Number(stats.total_bytes))} · {stats.images} img · {stats.pdfs} pdf · {stats.videos} vid
               </span>
             )}
           </div>
 
-          <div className="flex flex-col md:flex-row gap-2 md:gap-3 mb-4 md:mb-6">
-            <input
-              ref={searchRef}
-              value={q}
-              onChange={e => setQ(e.target.value)}
-              placeholder="Search...  (press /)"
-              className="flex-1 p-2 rounded bg-gray-900 border border-gray-800 focus:border-blue-500 outline-none min-w-0"
-            />
-            <div className="flex gap-2">
-              <select
-                value={type}
-                onChange={e => setType(e.target.value)}
-                className="p-2 rounded bg-gray-900 border border-gray-800 flex-shrink-0"
-              >
-                <option value="">All</option>
-                <option value="image">Images</option>
-                <option value="video">Videos</option>
-                <option value="pdf">PDFs</option>
-              </select>
-              <select
-                value={sort}
-                onChange={e => setSort(e.target.value)}
-                className="p-2 rounded bg-gray-900 border border-gray-800 flex-shrink-0"
-              >
-                {SORTS.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
-              </select>
-              <div className="flex rounded bg-gray-900 border border-gray-800 overflow-hidden flex-shrink-0">
-                <button
-                  onClick={() => setViewMode('grid')}
-                  className={`px-3 ${viewMode === 'grid' ? 'bg-blue-600' : 'hover:bg-gray-800'}`}
-                  title="Grid view"
-                >
-                  ▦
-                </button>
-                <button
-                  onClick={() => setViewMode('list')}
-                  className={`px-3 ${viewMode === 'list' ? 'bg-blue-600' : 'hover:bg-gray-800'}`}
-                  title="List view"
-                >
-                  ☰
-                </button>
+          {view === 'files' && (
+            <>
+              <div className="flex flex-col md:flex-row gap-2 md:gap-3 mb-4 md:mb-6">
+                <input
+                  ref={searchRef}
+                  value={q}
+                  onChange={e => setQ(e.target.value)}
+                  placeholder="Search...  (press /)"
+                  className="flex-1 p-2 rounded bg-gray-900 border border-gray-800 focus:border-blue-500 outline-none min-w-0"
+                />
+                <div className="flex gap-2 flex-wrap">
+                  <label className="flex items-center gap-2 px-3 py-2 rounded bg-gray-900 border border-gray-800 text-sm cursor-pointer whitespace-nowrap">
+                    <input type="checkbox" checked={searchContent} onChange={e => setSearchContent(e.target.checked)} className="accent-blue-500" />
+                    <span className="text-gray-400">Search in PDFs</span>
+                  </label>
+                  <select value={type} onChange={e => setType(e.target.value)} className="p-2 rounded bg-gray-900 border border-gray-800 flex-shrink-0">
+                    <option value="">All</option>
+                    <option value="image">Images</option>
+                    <option value="video">Videos</option>
+                    <option value="pdf">PDFs</option>
+                  </select>
+                  <select value={sort} onChange={e => setSort(e.target.value)} className="p-2 rounded bg-gray-900 border border-gray-800 flex-shrink-0">
+                    {SORTS.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+                  </select>
+                  <div className="flex rounded bg-gray-900 border border-gray-800 overflow-hidden flex-shrink-0">
+                    <button onClick={() => setViewMode('grid')} className={`px-3 ${viewMode === 'grid' ? 'bg-blue-600' : 'hover:bg-gray-800'}`} title="Grid view">▦</button>
+                    <button onClick={() => setViewMode('list')} className={`px-3 ${viewMode === 'list' ? 'bg-blue-600' : 'hover:bg-gray-800'}`} title="List view">☰</button>
+                  </div>
+                </div>
               </div>
-            </div>
-          </div>
 
-          {initialLoad ? (
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2 md:gap-3">
-              {Array.from({ length: 15 }).map((_, i) => (
-                <div key={i} className="bg-gray-900 border border-gray-800 rounded-lg p-2 md:p-3 animate-pulse">
-                  <div className="w-full h-28 md:h-32 bg-gray-800 rounded mb-2" />
-                  <div className="h-3 bg-gray-800 rounded w-3/4 mb-1.5" />
-                  <div className="h-2 bg-gray-800 rounded w-1/3" />
+              {initialLoad ? (
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2 md:gap-3">
+                  {Array.from({ length: 15 }).map((_, i) => (
+                    <div key={i} className="bg-gray-900 border border-gray-800 rounded-lg p-2 md:p-3 animate-pulse">
+                      <div className="w-full h-28 md:h-32 bg-gray-800 rounded mb-2" />
+                      <div className="h-3 bg-gray-800 rounded w-3/4 mb-1.5" />
+                      <div className="h-2 bg-gray-800 rounded w-1/3" />
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-          ) : files.length === 0 ? (
-            <div className="text-center mt-20">
-              <div className="text-6xl mb-4 opacity-30">
-                {showStarred ? '⭐' : activeCollection ? '📂' : '📭'}
-              </div>
-              <h3 className="text-lg font-medium mb-2">
-                {showStarred
-                  ? 'No starred files yet'
-                  : activeCollection
-                    ? activeData?.is_smart ? 'No matches yet' : 'Empty collection'
-                    : 'Your vault is empty'}
-              </h3>
-              <p className="text-sm text-gray-500 max-w-sm mx-auto">
-                {showStarred
-                  ? 'Right-click any file and choose "Star" to pin it here.'
-                  : activeCollection
-                    ? activeData?.is_smart
-                      ? 'Files matching these rules will appear here automatically.'
-                      : 'Open any file to add it to this collection.'
-                    : 'Post a photo or PDF in your Telegram group and it appears here.'}
-              </p>
-            </div>
-          ) : viewMode === 'list' ? (
-            <FileList
-              files={files}
-              selected={selected}
-              onOpen={open}
-              onToggle={toggleSelect}
-              onStar={toggleStar}
-              onContext={handleContextMenu}
-              onTouchStart={handleTouchStart}
-              onTouchEnd={handleTouchEnd}
-            />
-          ) : useGrouping ? (
-            <div className="space-y-8 pb-24">
-              {grouped.map(g => (
-                <div key={g.label}>
-                  <h3 className="text-xs uppercase tracking-wider text-gray-500 font-semibold mb-3 px-1">
-                    {g.label}
+              ) : files.length === 0 ? (
+                <div className="text-center mt-20">
+                  <div className="text-6xl mb-4 opacity-30">{showStarred ? '⭐' : activeCollection ? '📂' : '📭'}</div>
+                  <h3 className="text-lg font-medium mb-2">
+                    {showStarred ? 'No starred files yet' : activeCollection ? (activeData?.is_smart ? 'No matches yet' : 'Empty collection') : 'Your vault is empty'}
                   </h3>
-                  <FileGrid
-                    files={g.files}
-                    selected={selected}
-                    onOpen={open}
-                    onToggle={toggleSelect}
-                    onStar={toggleStar}
-                    onContext={handleContextMenu}
-                    onTouchStart={handleTouchStart}
-                    onTouchEnd={handleTouchEnd}
-                  />
+                  <p className="text-sm text-gray-500 max-w-sm mx-auto">
+                    {showStarred ? 'Star any file to pin it here.' : activeCollection ? (activeData?.is_smart ? 'Files matching these rules will appear here.' : 'Open any file to add it to this collection.') : 'Post a file in your Telegram group.'}
+                  </p>
                 </div>
-              ))}
-            </div>
-          ) : (
-            <div className="pb-24">
-              <FileGrid
-                files={files}
-                selected={selected}
-                onOpen={open}
-                onToggle={toggleSelect}
-                onStar={toggleStar}
-                onContext={handleContextMenu}
-                onTouchStart={handleTouchStart}
-                onTouchEnd={handleTouchEnd}
-              />
-            </div>
+              ) : viewMode === 'list' ? (
+                <FileList files={files} selected={selected} onOpen={open} onToggle={toggleSelect} onStar={toggleStar} onContext={handleContextMenu} onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd} />
+              ) : useGrouping ? (
+                <div className="space-y-8 pb-24">
+                  {grouped.map(g => (
+                    <div key={g.label}>
+                      <h3 className="text-xs uppercase tracking-wider text-gray-500 font-semibold mb-3 px-1">{g.label}</h3>
+                      <FileGrid files={g.files} selected={selected} onOpen={open} onToggle={toggleSelect} onStar={toggleStar} onContext={handleContextMenu} onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd} />
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="pb-24">
+                  <FileGrid files={files} selected={selected} onOpen={open} onToggle={toggleSelect} onStar={toggleStar} onContext={handleContextMenu} onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd} />
+                </div>
+              )}
+
+              {hasMore && (
+                <button onClick={() => load()} disabled={loading} className="mt-6 px-4 py-2 bg-blue-600 rounded hover:bg-blue-500 disabled:opacity-50">
+                  {loading ? 'Loading...' : 'Load more'}
+                </button>
+              )}
+            </>
           )}
 
-          {hasMore && (
-            <button
-              onClick={() => load()}
-              disabled={loading}
-              className="mt-6 px-4 py-2 bg-blue-600 rounded hover:bg-blue-500 disabled:opacity-50"
-            >
-              {loading ? 'Loading...' : 'Load more'}
-            </button>
+          {view === 'duplicates' && (
+            <div className="space-y-6 pb-24">
+              {duplicates.length === 0 ? (
+                <div className="text-center mt-20">
+                  <div className="text-6xl mb-4 opacity-30">✨</div>
+                  <h3 className="text-lg font-medium mb-2">No duplicates</h3>
+                  <p className="text-sm text-gray-500">All files have unique sizes.</p>
+                </div>
+              ) : (
+                duplicates.map((g, i) => (
+                  <div key={i} className="bg-gray-900 border border-gray-800 rounded-lg p-4">
+                    <div className="text-xs text-gray-500 mb-3">
+                      {g.count} files · {formatSize(g.size_bytes)} each
+                    </div>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2">
+                      {g.files.map(f => (
+                        <div
+                          key={f.id}
+                          onClick={() => open(f)}
+                          onContextMenu={(e) => handleContextMenu(e, f)}
+                          className="bg-gray-950 border border-gray-800 rounded-lg p-2 cursor-pointer hover:border-blue-500 transition"
+                        >
+                          {f.mime_type.startsWith('image/') ? (
+                            <img src={`/api/files/${f.id}/thumb`} alt={f.filename} className="w-full h-24 object-cover rounded mb-1.5 bg-gray-800" loading="lazy" />
+                          ) : (
+                            <div className="text-2xl h-24 flex items-center justify-center bg-gray-800 rounded mb-1.5">📄</div>
+                          )}
+                          <div className="text-xs truncate">{f.filename}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
           )}
         </div>
       </main>
@@ -687,17 +646,11 @@ export default function Home() {
       {menu && (
         <div
           onClick={(e) => e.stopPropagation()}
-          style={{
-            position: 'fixed',
-            left: Math.min(menu.x, window.innerWidth - 220),
-            top: Math.min(menu.y, window.innerHeight - 280),
-          }}
+          style={{ position: 'fixed', left: Math.min(menu.x, window.innerWidth - 220), top: Math.min(menu.y, window.innerHeight - 280) }}
           className="bg-gray-900 border border-gray-700 rounded-lg shadow-2xl py-1 w-52 z-[60] text-sm"
         >
           <button onClick={() => { open(menu.file); setMenu(null); }} className="w-full text-left px-3 py-2 hover:bg-gray-800">Open</button>
-          <button onClick={() => { toggleStar(menu.file); setMenu(null); }} className="w-full text-left px-3 py-2 hover:bg-gray-800">
-            {menu.file.starred ? '★ Unstar' : '☆ Star'}
-          </button>
+          <button onClick={() => { toggleStar(menu.file); setMenu(null); }} className="w-full text-left px-3 py-2 hover:bg-gray-800">{menu.file.starred ? '★ Unstar' : '☆ Star'}</button>
           <button onClick={() => { renameFileById(menu.file); setMenu(null); }} className="w-full text-left px-3 py-2 hover:bg-gray-800">Rename</button>
           <button onClick={() => { copyLink(menu.file); setMenu(null); }} className="w-full text-left px-3 py-2 hover:bg-gray-800">Copy link</button>
 
@@ -710,11 +663,7 @@ export default function Home() {
               {menuSub && (
                 <div className="absolute left-full top-0 ml-1 bg-gray-900 border border-gray-700 rounded-lg shadow-2xl py-1 w-48 max-h-60 overflow-y-auto">
                   {manualCollections.map(c => (
-                    <button
-                      key={c.id}
-                      onClick={() => { addFileToCollection(menu.file, c.id); setMenu(null); }}
-                      className="w-full text-left px-3 py-2 hover:bg-gray-800 flex items-center gap-2"
-                    >
+                    <button key={c.id} onClick={() => { addFileToCollection(menu.file, c.id); setMenu(null); }} className="w-full text-left px-3 py-2 hover:bg-gray-800 flex items-center gap-2">
                       <span className="w-2 h-2 rounded-full" style={{ background: c.color }} />
                       <span className="truncate">{c.name}</span>
                     </button>
@@ -735,11 +684,7 @@ export default function Home() {
               {menuMoveSub && (
                 <div className="absolute left-full top-0 ml-1 bg-gray-900 border border-gray-700 rounded-lg shadow-2xl py-1 w-48 max-h-60 overflow-y-auto">
                   {manualCollections.filter(c => c.id !== activeCollection).map(c => (
-                    <button
-                      key={c.id}
-                      onClick={() => { moveFileToCollection(menu.file, c.id); setMenu(null); }}
-                      className="w-full text-left px-3 py-2 hover:bg-gray-800 flex items-center gap-2"
-                    >
+                    <button key={c.id} onClick={() => { moveFileToCollection(menu.file, c.id); setMenu(null); }} className="w-full text-left px-3 py-2 hover:bg-gray-800 flex items-center gap-2">
                       <span className="w-2 h-2 rounded-full" style={{ background: c.color }} />
                       <span className="truncate">{c.name}</span>
                     </button>
@@ -757,11 +702,7 @@ export default function Home() {
       {selected.size > 0 && (
         <div className="fixed bottom-3 left-1/2 -translate-x-1/2 bg-gray-900 border border-gray-700 rounded-lg shadow-2xl px-3 py-2 md:px-4 md:py-3 flex items-center gap-2 md:gap-3 z-40 max-w-[95vw]">
           <span className="text-xs md:text-sm font-medium whitespace-nowrap">{selected.size} selected</span>
-          <select
-            onChange={(e) => { if (e.target.value) { bulkAddToCollection(Number(e.target.value)); e.target.value = ''; } }}
-            className="text-xs md:text-sm bg-gray-800 border border-gray-700 rounded px-2 py-1 min-w-0"
-            defaultValue=""
-          >
+          <select onChange={(e) => { if (e.target.value) { bulkAddToCollection(Number(e.target.value)); e.target.value = ''; } }} className="text-xs md:text-sm bg-gray-800 border border-gray-700 rounded px-2 py-1 min-w-0" defaultValue="">
             <option value="">Add to...</option>
             {manualCollections.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
@@ -774,20 +715,8 @@ export default function Home() {
         <div onClick={resetForm} className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
           <div onClick={e => e.stopPropagation()} className="bg-gray-900 border border-gray-800 rounded-lg p-5 md:p-6 w-full max-w-md max-h-[90vh] overflow-y-auto">
             <h3 className="text-lg font-semibold mb-4">New Collection</h3>
-            <input
-              autoFocus
-              value={newName}
-              onChange={e => setNewName(e.target.value)}
-              placeholder="Name"
-              className="w-full px-3 py-2 rounded bg-gray-800 border border-gray-700 focus:border-blue-500 outline-none mb-4"
-            />
-            <button
-              type="button"
-              onClick={() => setIsSmart(!isSmart)}
-              className={`w-full flex items-center justify-between p-3 rounded border mb-4 transition ${
-                isSmart ? 'bg-blue-950/40 border-blue-600' : 'bg-gray-800 border-gray-700 hover:border-gray-600'
-              }`}
-            >
+            <input autoFocus value={newName} onChange={e => setNewName(e.target.value)} placeholder="Name" className="w-full px-3 py-2 rounded bg-gray-800 border border-gray-700 focus:border-blue-500 outline-none mb-4" />
+            <button type="button" onClick={() => setIsSmart(!isSmart)} className={`w-full flex items-center justify-between p-3 rounded border mb-4 transition ${isSmart ? 'bg-blue-950/40 border-blue-600' : 'bg-gray-800 border-gray-700 hover:border-gray-600'}`}>
               <span className="font-medium">⚡ Smart collection</span>
               <span className={`text-xs ${isSmart ? 'text-blue-300' : 'text-gray-500'}`}>{isSmart ? 'ON' : 'OFF'}</span>
             </button>
@@ -796,11 +725,7 @@ export default function Home() {
               <div className="space-y-3 mb-4 p-3 bg-gray-950 rounded border border-gray-800">
                 <div>
                   <label className="text-xs text-gray-500 block mb-1">Type</label>
-                  <select
-                    value={ruleType}
-                    onChange={e => setRuleType(e.target.value as RuleType)}
-                    className="w-full px-2 py-1.5 rounded bg-gray-800 border border-gray-700 text-sm"
-                  >
+                  <select value={ruleType} onChange={e => setRuleType(e.target.value as RuleType)} className="w-full px-2 py-1.5 rounded bg-gray-800 border border-gray-700 text-sm">
                     <option value="">Any</option>
                     <option value="image">Images</option>
                     <option value="video">Videos</option>
@@ -809,12 +734,7 @@ export default function Home() {
                 </div>
                 <div>
                   <label className="text-xs text-gray-500 block mb-1">Filename contains</label>
-                  <input
-                    value={ruleName}
-                    onChange={e => setRuleName(e.target.value)}
-                    placeholder="e.g. receipt"
-                    className="w-full px-2 py-1.5 rounded bg-gray-800 border border-gray-700 text-sm"
-                  />
+                  <input value={ruleName} onChange={e => setRuleName(e.target.value)} placeholder="e.g. receipt" className="w-full px-2 py-1.5 rounded bg-gray-800 border border-gray-700 text-sm" />
                 </div>
                 <div className="flex gap-2">
                   <div className="flex-1">
@@ -839,28 +759,9 @@ export default function Home() {
 
       {preview && (
         <div onClick={() => setPreview(null)} className="fixed inset-0 bg-black flex items-center justify-center p-2 md:p-4 z-50">
-          <button
-            onClick={(e) => { e.stopPropagation(); setPreview(null); }}
-            className="absolute top-3 right-3 md:top-4 md:right-4 text-white text-2xl md:text-3xl leading-none hover:text-red-400 z-10 w-10 h-10 flex items-center justify-center rounded-full bg-black/50 hover:bg-black/80"
-          >
-            ×
-          </button>
-          {canPrev && (
-            <button
-              onClick={(e) => { e.stopPropagation(); navigatePreview(-1); }}
-              className="absolute left-2 md:left-4 top-1/2 -translate-y-1/2 w-10 h-10 md:w-12 md:h-12 flex items-center justify-center rounded-full bg-black/60 hover:bg-black/90 text-white text-2xl z-10"
-            >
-              ‹
-            </button>
-          )}
-          {canNext && (
-            <button
-              onClick={(e) => { e.stopPropagation(); navigatePreview(1); }}
-              className="absolute right-2 md:right-4 top-1/2 -translate-y-1/2 w-10 h-10 md:w-12 md:h-12 flex items-center justify-center rounded-full bg-black/60 hover:bg-black/90 text-white text-2xl z-10"
-            >
-              ›
-            </button>
-          )}
+          <button onClick={(e) => { e.stopPropagation(); setPreview(null); }} className="absolute top-3 right-3 md:top-4 md:right-4 text-white text-2xl md:text-3xl leading-none hover:text-red-400 z-10 w-10 h-10 flex items-center justify-center rounded-full bg-black/50 hover:bg-black/80">×</button>
+          {canPrev && <button onClick={(e) => { e.stopPropagation(); navigatePreview(-1); }} className="absolute left-2 md:left-4 top-1/2 -translate-y-1/2 w-10 h-10 md:w-12 md:h-12 flex items-center justify-center rounded-full bg-black/60 hover:bg-black/90 text-white text-2xl z-10">‹</button>}
+          {canNext && <button onClick={(e) => { e.stopPropagation(); navigatePreview(1); }} className="absolute right-2 md:right-4 top-1/2 -translate-y-1/2 w-10 h-10 md:w-12 md:h-12 flex items-center justify-center rounded-full bg-black/60 hover:bg-black/90 text-white text-2xl z-10">›</button>}
           <div onClick={e => e.stopPropagation()} className="w-full h-full flex flex-col items-center justify-center">
             {preview.mime.startsWith('image/') ? (
               <img src={preview.url} alt={preview.name} className="max-h-[70vh] md:max-h-[75vh] max-w-[95vw] rounded" />
@@ -871,26 +772,12 @@ export default function Home() {
             ) : (
               <iframe src={preview.url} className="w-full h-[70vh] md:h-[75vh] max-w-5xl bg-white rounded" />
             )}
+
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center mt-3 gap-2 md:gap-3 w-full max-w-5xl px-2">
               {renaming ? (
-                <input
-                  autoFocus
-                  value={renameValue}
-                  onChange={e => setRenameValue(e.target.value)}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter') renameCurrent();
-                    if (e.key === 'Escape') setRenaming(false);
-                  }}
-                  onBlur={renameCurrent}
-                  className="flex-1 w-full px-2 py-1 rounded bg-gray-800 border border-blue-500 text-sm outline-none"
-                />
+                <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') renameCurrent(); if (e.key === 'Escape') setRenaming(false); }} onBlur={renameCurrent} className="flex-1 w-full px-2 py-1 rounded bg-gray-800 border border-blue-500 text-sm outline-none" />
               ) : (
-                <span
-                  onClick={() => { setRenameValue(preview.name); setRenaming(true); }}
-                  className="text-sm text-gray-300 truncate cursor-pointer hover:text-white flex-1 w-full"
-                >
-                  {preview.name}
-                </span>
+                <span onClick={() => { setRenameValue(preview.name); setRenaming(true); }} className="text-sm text-gray-300 truncate cursor-pointer hover:text-white flex-1 w-full">{preview.name}</span>
               )}
               <div className="flex items-center gap-4 flex-shrink-0">
                 <span className="text-xs text-gray-600 hidden md:inline">{previewIndex + 1} / {files.length}</span>
@@ -898,21 +785,14 @@ export default function Home() {
                 <button onClick={removeCurrent} className="text-sm text-red-400 hover:text-red-300">Remove</button>
               </div>
             </div>
+
             {manualCollections.length > 0 && (
               <div className="flex flex-wrap items-center gap-2 mt-3 w-full max-w-5xl px-2">
                 <span className="text-xs text-gray-500">Add to:</span>
                 {manualCollections.map(c => {
                   const isIn = previewCollections.includes(c.id);
                   return (
-                    <button
-                      key={c.id}
-                      onClick={() => toggleInCollection(preview.id, c.id)}
-                      className={`text-xs px-2.5 py-1 rounded-full border transition ${isIn ? 'text-white' : 'text-gray-400 hover:text-white'}`}
-                      style={{
-                        borderColor: isIn ? c.color : '#374151',
-                        background: isIn ? `${c.color}22` : 'transparent',
-                      }}
-                    >
+                    <button key={c.id} onClick={() => toggleInCollection(preview.id, c.id)} className={`text-xs px-2.5 py-1 rounded-full border transition ${isIn ? 'text-white' : 'text-gray-400 hover:text-white'}`} style={{ borderColor: isIn ? c.color : '#374151', background: isIn ? `${c.color}22` : 'transparent' }}>
                       {isIn ? '✓ ' : ''}{c.name}
                     </button>
                   );
@@ -926,58 +806,28 @@ export default function Home() {
   );
 }
 
-function FileGrid({
-  files, selected, onOpen, onToggle, onStar, onContext, onTouchStart, onTouchEnd,
-}: {
-  files: File[];
-  selected: Set<number>;
-  onOpen: (f: File) => void;
-  onToggle: (id: number, e: React.MouseEvent) => void;
+function FileGrid({ files, selected, onOpen, onToggle, onStar, onContext, onTouchStart, onTouchEnd }: {
+  files: File[]; selected: Set<number>;
+  onOpen: (f: File) => void; onToggle: (id: number, e: React.MouseEvent) => void;
   onStar: (f: File, e?: React.MouseEvent) => void;
   onContext: (e: React.MouseEvent, f: File) => void;
-  onTouchStart: (e: React.TouchEvent, f: File) => void;
-  onTouchEnd: () => void;
+  onTouchStart: (e: React.TouchEvent, f: File) => void; onTouchEnd: () => void;
 }) {
   return (
     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2 md:gap-3">
       {files.map(f => {
         const isSel = selected.has(f.id);
         return (
-          <div
-            key={f.id}
-            onClick={() => onOpen(f)}
-            onContextMenu={(e) => onContext(e, f)}
-            onTouchStart={(e) => onTouchStart(e, f)}
-            onTouchEnd={onTouchEnd}
-            onTouchMove={onTouchEnd}
-            className={`relative group bg-gray-900 border rounded-lg p-2 md:p-3 text-left cursor-pointer transition select-none ${
-              isSel ? 'border-blue-500 ring-2 ring-blue-500/40' : 'border-gray-800 hover:border-blue-500'
-            }`}
-          >
-            <div
-              onClick={(e) => onToggle(f.id, e)}
-              className={`absolute top-1.5 right-1.5 md:top-2 md:right-2 w-6 h-6 rounded-full border-2 flex items-center justify-center text-xs font-bold transition z-10 ${
-                isSel ? 'bg-blue-500 border-blue-500 text-white' : 'bg-black/60 border-white/40 md:opacity-0 md:group-hover:opacity-100'
-              }`}
-            >
+          <div key={f.id} onClick={() => onOpen(f)} onContextMenu={(e) => onContext(e, f)} onTouchStart={(e) => onTouchStart(e, f)} onTouchEnd={onTouchEnd} onTouchMove={onTouchEnd}
+            className={`relative group bg-gray-900 border rounded-lg p-2 md:p-3 text-left cursor-pointer transition select-none ${isSel ? 'border-blue-500 ring-2 ring-blue-500/40' : 'border-gray-800 hover:border-blue-500'}`}>
+            <div onClick={(e) => onToggle(f.id, e)} className={`absolute top-1.5 right-1.5 md:top-2 md:right-2 w-6 h-6 rounded-full border-2 flex items-center justify-center text-xs font-bold transition z-10 ${isSel ? 'bg-blue-500 border-blue-500 text-white' : 'bg-black/60 border-white/40 md:opacity-0 md:group-hover:opacity-100'}`}>
               {isSel ? '✓' : ''}
             </div>
-            <button
-              onClick={(e) => onStar(f, e)}
-              className={`absolute top-1.5 left-1.5 md:top-2 md:left-2 w-6 h-6 rounded-full flex items-center justify-center text-sm z-10 transition ${
-                f.starred ? 'text-yellow-400 bg-black/60' : 'text-white/60 bg-black/40 md:opacity-0 md:group-hover:opacity-100'
-              }`}
-              title={f.starred ? 'Unstar' : 'Star'}
-            >
+            <button onClick={(e) => onStar(f, e)} className={`absolute top-1.5 left-1.5 md:top-2 md:left-2 w-6 h-6 rounded-full flex items-center justify-center text-sm z-10 transition ${f.starred ? 'text-yellow-400 bg-black/60' : 'text-white/60 bg-black/40 md:opacity-0 md:group-hover:opacity-100'}`}>
               {f.starred ? '★' : '☆'}
             </button>
             {f.mime_type.startsWith('image/') ? (
-              <img
-                src={`/api/files/${f.id}/thumb`}
-                alt={f.filename}
-                className="w-full h-28 md:h-32 object-cover rounded mb-2 bg-gray-800"
-                loading="lazy"
-              />
+              <img src={`/api/files/${f.id}/thumb`} alt={f.filename} className="w-full h-28 md:h-32 object-cover rounded mb-2 bg-gray-800" loading="lazy" />
             ) : (
               <div className="text-3xl mb-2 h-28 md:h-32 flex items-center justify-center bg-gray-800 rounded">
                 {f.mime_type === 'application/pdf' ? '📄' : f.mime_type.startsWith('video/') ? '🎬' : '📎'}
@@ -992,66 +842,32 @@ function FileGrid({
   );
 }
 
-function FileList({
-  files, selected, onOpen, onToggle, onStar, onContext, onTouchStart, onTouchEnd,
-}: {
-  files: File[];
-  selected: Set<number>;
-  onOpen: (f: File) => void;
-  onToggle: (id: number, e: React.MouseEvent) => void;
+function FileList({ files, selected, onOpen, onToggle, onStar, onContext, onTouchStart, onTouchEnd }: {
+  files: File[]; selected: Set<number>;
+  onOpen: (f: File) => void; onToggle: (id: number, e: React.MouseEvent) => void;
   onStar: (f: File, e?: React.MouseEvent) => void;
   onContext: (e: React.MouseEvent, f: File) => void;
-  onTouchStart: (e: React.TouchEvent, f: File) => void;
-  onTouchEnd: () => void;
+  onTouchStart: (e: React.TouchEvent, f: File) => void; onTouchEnd: () => void;
 }) {
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
       <div className="hidden md:grid grid-cols-[40px_40px_1fr_100px_100px_140px] gap-2 px-3 py-2 border-b border-gray-800 text-xs uppercase tracking-wider text-gray-500 font-semibold">
-        <div></div>
-        <div></div>
-        <div>Name</div>
-        <div>Type</div>
-        <div>Size</div>
-        <div>Date</div>
+        <div></div><div></div><div>Name</div><div>Type</div><div>Size</div><div>Date</div>
       </div>
       {files.map(f => {
         const isSel = selected.has(f.id);
-        const typeLabel = f.mime_type.startsWith('image/') ? 'Image'
-          : f.mime_type.startsWith('video/') ? 'Video'
-          : f.mime_type === 'application/pdf' ? 'PDF'
-          : 'File';
+        const typeLabel = f.mime_type.startsWith('image/') ? 'Image' : f.mime_type.startsWith('video/') ? 'Video' : f.mime_type === 'application/pdf' ? 'PDF' : 'File';
         return (
-          <div
-            key={f.id}
-            onClick={() => onOpen(f)}
-            onContextMenu={(e) => onContext(e, f)}
-            onTouchStart={(e) => onTouchStart(e, f)}
-            onTouchEnd={onTouchEnd}
-            onTouchMove={onTouchEnd}
-            className={`grid grid-cols-[40px_40px_1fr_80px] md:grid-cols-[40px_40px_1fr_100px_100px_140px] gap-2 px-3 py-2 items-center cursor-pointer border-b border-gray-800/50 hover:bg-gray-800/50 transition ${
-              isSel ? 'bg-blue-900/20' : ''
-            }`}
-          >
-            <div
-              onClick={(e) => onToggle(f.id, e)}
-              className={`w-5 h-5 rounded border-2 flex items-center justify-center text-xs ${
-                isSel ? 'bg-blue-500 border-blue-500 text-white' : 'border-gray-600'
-              }`}
-            >
+          <div key={f.id} onClick={() => onOpen(f)} onContextMenu={(e) => onContext(e, f)} onTouchStart={(e) => onTouchStart(e, f)} onTouchEnd={onTouchEnd} onTouchMove={onTouchEnd}
+            className={`grid grid-cols-[40px_40px_1fr_80px] md:grid-cols-[40px_40px_1fr_100px_100px_140px] gap-2 px-3 py-2 items-center cursor-pointer border-b border-gray-800/50 hover:bg-gray-800/50 transition ${isSel ? 'bg-blue-900/20' : ''}`}>
+            <div onClick={(e) => onToggle(f.id, e)} className={`w-5 h-5 rounded border-2 flex items-center justify-center text-xs ${isSel ? 'bg-blue-500 border-blue-500 text-white' : 'border-gray-600'}`}>
               {isSel ? '✓' : ''}
             </div>
-            <button
-              onClick={(e) => onStar(f, e)}
-              className={`text-base ${f.starred ? 'text-yellow-400' : 'text-gray-600 hover:text-white'}`}
-            >
-              {f.starred ? '★' : '☆'}
-            </button>
+            <button onClick={(e) => onStar(f, e)} className={`text-base ${f.starred ? 'text-yellow-400' : 'text-gray-600 hover:text-white'}`}>{f.starred ? '★' : '☆'}</button>
             <div className="truncate text-sm">{f.filename}</div>
             <div className="hidden md:block text-xs text-gray-500">{typeLabel}</div>
             <div className="text-xs text-gray-500">{formatSize(f.size_bytes)}</div>
-            <div className="hidden md:block text-xs text-gray-500">
-              {new Date(f.telegram_date).toLocaleDateString()}
-            </div>
+            <div className="hidden md:block text-xs text-gray-500">{new Date(f.telegram_date).toLocaleDateString()}</div>
           </div>
         );
       })}
