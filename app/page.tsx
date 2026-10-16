@@ -13,8 +13,12 @@ type Collection = {
   id: number;
   name: string;
   color: string;
+  is_smart: boolean;
+  rules: any;
   file_count: number;
 };
+
+type RuleType = '' | 'image' | 'video' | 'pdf';
 
 export default function Home() {
   const [files, setFiles] = useState<File[]>([]);
@@ -28,8 +32,15 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [preview, setPreview] = useState<{ id: number; url: string; mime: string; name: string } | null>(null);
   const [previewCollections, setPreviewCollections] = useState<number[]>([]);
-  const [creating, setCreating] = useState(false);
+  const [showCreate, setShowCreate] = useState(false);
+
+  // New collection form state
   const [newName, setNewName] = useState('');
+  const [isSmart, setIsSmart] = useState(false);
+  const [ruleType, setRuleType] = useState<RuleType>('');
+  const [ruleName, setRuleName] = useState('');
+  const [ruleSizeMin, setRuleSizeMin] = useState('');
+  const [ruleSizeMax, setRuleSizeMax] = useState('');
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedQ(q), 300);
@@ -75,16 +86,32 @@ export default function Home() {
     }
   }
 
+  function resetForm() {
+    setNewName('');
+    setIsSmart(false);
+    setRuleType('');
+    setRuleName('');
+    setRuleSizeMin('');
+    setRuleSizeMax('');
+    setShowCreate(false);
+  }
+
   async function createCollection() {
     if (!newName.trim()) return;
+    const rules = isSmart ? {
+      type: ruleType || undefined,
+      nameContains: ruleName.trim() || undefined,
+      sizeMin: ruleSizeMin ? Number(ruleSizeMin) * 1024 * 1024 : undefined,
+      sizeMax: ruleSizeMax ? Number(ruleSizeMax) * 1024 * 1024 : undefined,
+    } : undefined;
+
     const res = await fetch('/api/collections', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: newName.trim() }),
+      body: JSON.stringify({ name: newName.trim(), is_smart: isSmart, rules }),
     });
     if (res.ok) {
-      setNewName('');
-      setCreating(false);
+      resetForm();
       loadCollections();
     }
   }
@@ -138,30 +165,13 @@ export default function Home() {
         <div className="mt-6 mb-2 flex justify-between items-center px-3">
           <span className="text-xs uppercase text-gray-500 font-semibold tracking-wider">Collections</span>
           <button
-            onClick={() => setCreating(true)}
+            onClick={() => setShowCreate(true)}
             className="text-gray-400 hover:text-white text-lg leading-none"
             title="New collection"
           >
             +
           </button>
         </div>
-
-        {creating && (
-          <div className="mb-2 px-3">
-            <input
-              autoFocus
-              value={newName}
-              onChange={e => setNewName(e.target.value)}
-              onKeyDown={e => {
-                if (e.key === 'Enter') createCollection();
-                if (e.key === 'Escape') { setCreating(false); setNewName(''); }
-              }}
-              onBlur={() => { if (!newName) setCreating(false); }}
-              placeholder="Name, then Enter"
-              className="w-full px-2 py-1 text-sm rounded bg-gray-800 border border-gray-700 focus:border-blue-500 outline-none"
-            />
-          </div>
-        )}
 
         <div className="flex-1 overflow-y-auto">
           {collections.map(c => (
@@ -173,11 +183,17 @@ export default function Home() {
               onClick={() => setActiveCollection(c.id)}
             >
               <div className="flex items-center gap-2 min-w-0">
-                <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: c.color }} />
+                {c.is_smart ? (
+                  <span className="text-xs">⚡</span>
+                ) : (
+                  <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: c.color }} />
+                )}
                 <span className="truncate">{c.name}</span>
               </div>
               <div className="flex items-center gap-2 flex-shrink-0">
-                <span className="text-xs text-gray-500">{c.file_count}</span>
+                <span className="text-xs text-gray-500">
+                  {c.is_smart ? 'auto' : c.file_count}
+                </span>
                 <button
                   onClick={(e) => deleteCollection(c.id, e)}
                   className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-red-400 text-base leading-none"
@@ -188,7 +204,7 @@ export default function Home() {
               </div>
             </div>
           ))}
-          {collections.length === 0 && !creating && (
+          {collections.length === 0 && (
             <p className="text-xs text-gray-600 px-3">None yet — click +</p>
           )}
         </div>
@@ -204,9 +220,16 @@ export default function Home() {
       {/* Main */}
       <main className="flex-1 p-6 overflow-y-auto">
         <div className="max-w-6xl mx-auto">
-          <h2 className="text-2xl font-semibold mb-4">
-            {activeData ? activeData.name : 'All Files'}
-          </h2>
+          <div className="flex items-center gap-3 mb-4">
+            <h2 className="text-2xl font-semibold">
+              {activeData ? activeData.name : 'All Files'}
+            </h2>
+            {activeData?.is_smart && (
+              <span className="text-xs px-2 py-0.5 rounded bg-blue-900/50 text-blue-300 border border-blue-800">
+                ⚡ Smart — auto-updates
+              </span>
+            )}
+          </div>
 
           <div className="flex gap-3 mb-6">
             <input
@@ -265,12 +288,113 @@ export default function Home() {
           {files.length === 0 && !loading && (
             <p className="text-gray-500 text-center mt-12">
               {activeCollection
-                ? 'No files in this collection yet. Open any file and add it here.'
-                : 'No files yet. Post an image or PDF in your Telegram group.'}
+                ? activeData?.is_smart
+                  ? 'No files match these rules yet. New files will appear here automatically.'
+                  : 'No files in this collection yet. Open any file and add it here.'
+                : 'No files yet. Post a file in your Telegram group.'}
             </p>
           )}
         </div>
       </main>
+
+      {/* Create Collection Modal */}
+      {showCreate && (
+        <div
+          onClick={resetForm}
+          className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            className="bg-gray-900 border border-gray-800 rounded-lg p-6 w-full max-w-md"
+          >
+            <h3 className="text-lg font-semibold mb-4">New Collection</h3>
+
+            <input
+              autoFocus
+              value={newName}
+              onChange={e => setNewName(e.target.value)}
+              placeholder="Name"
+              className="w-full px-3 py-2 rounded bg-gray-800 border border-gray-700 focus:border-blue-500 outline-none mb-4"
+            />
+
+            <label className="flex items-center gap-2 text-sm mb-4 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={isSmart}
+                onChange={e => setIsSmart(e.target.checked)}
+              />
+              <span>⚡ Smart — auto-capture new files by rules</span>
+            </label>
+
+            {isSmart && (
+              <div className="space-y-3 mb-4 p-3 bg-gray-950 rounded border border-gray-800">
+                <div>
+                  <label className="text-xs text-gray-500 block mb-1">Type</label>
+                  <select
+                    value={ruleType}
+                    onChange={e => setRuleType(e.target.value as RuleType)}
+                    className="w-full px-2 py-1.5 rounded bg-gray-800 border border-gray-700 text-sm"
+                  >
+                    <option value="">Any</option>
+                    <option value="image">Images</option>
+                    <option value="video">Videos</option>
+                    <option value="pdf">PDFs</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-xs text-gray-500 block mb-1">Filename contains</label>
+                  <input
+                    value={ruleName}
+                    onChange={e => setRuleName(e.target.value)}
+                    placeholder="e.g. receipt"
+                    className="w-full px-2 py-1.5 rounded bg-gray-800 border border-gray-700 text-sm"
+                  />
+                </div>
+
+                <div className="flex gap-2">
+                  <div className="flex-1">
+                    <label className="text-xs text-gray-500 block mb-1">Min size (MB)</label>
+                    <input
+                      value={ruleSizeMin}
+                      onChange={e => setRuleSizeMin(e.target.value)}
+                      type="number"
+                      placeholder="0"
+                      className="w-full px-2 py-1.5 rounded bg-gray-800 border border-gray-700 text-sm"
+                    />
+                  </div>
+                  <div className="flex-1">
+                    <label className="text-xs text-gray-500 block mb-1">Max size (MB)</label>
+                    <input
+                      value={ruleSizeMax}
+                      onChange={e => setRuleSizeMax(e.target.value)}
+                      type="number"
+                      placeholder="20"
+                      className="w-full px-2 py-1.5 rounded bg-gray-800 border border-gray-700 text-sm"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={resetForm}
+                className="px-4 py-2 text-sm text-gray-400 hover:text-white"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={createCollection}
+                disabled={!newName.trim()}
+                className="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-500 rounded disabled:opacity-50"
+              >
+                Create
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Preview Modal */}
       {preview && (
@@ -281,7 +405,6 @@ export default function Home() {
           <button
             onClick={(e) => { e.stopPropagation(); setPreview(null); }}
             className="absolute top-4 right-4 text-white text-3xl leading-none hover:text-red-400 z-10 w-10 h-10 flex items-center justify-center rounded-full bg-black/50 hover:bg-black/80"
-            aria-label="Close"
           >
             ×
           </button>
@@ -303,10 +426,10 @@ export default function Home() {
               </a>
             </div>
 
-            {collections.length > 0 && (
+            {collections.filter(c => !c.is_smart).length > 0 && (
               <div className="flex flex-wrap items-center gap-2 mt-3 w-full max-w-5xl">
                 <span className="text-xs text-gray-500">Add to:</span>
-                {collections.map(c => {
+                {collections.filter(c => !c.is_smart).map(c => {
                   const isIn = previewCollections.includes(c.id);
                   return (
                     <button
@@ -325,9 +448,6 @@ export default function Home() {
                   );
                 })}
               </div>
-            )}
-            {collections.length === 0 && (
-              <p className="text-xs text-gray-600 mt-3">Create a collection in the sidebar to organize files</p>
             )}
           </div>
         </div>
