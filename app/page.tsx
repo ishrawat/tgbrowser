@@ -316,17 +316,22 @@ export default function Home() {
               className="w-full px-3 py-2 rounded bg-gray-800 border border-gray-700 focus:border-blue-500 outline-none mb-4"
             />
 
-            <label className="flex items-center gap-3 text-sm mb-4 cursor-pointer p-3 bg-gray-800 rounded border border-gray-700 hover:border-blue-500">
-              <input
-                type="checkbox"
-                checked={isSmart}
-                onChange={e => setIsSmart(e.target.checked)}
-                className="w-5 h-5 accent-blue-500 cursor-pointer"
-              />
-              <span className="font-medium">⚡ Smart collection</span>
-              <span className="text-gray-500 text-xs ml-auto">auto-capture new files</span>
-            </label>
-
+            <button
+  type="button"
+  onClick={() => setIsSmart(!isSmart)}
+  className={`w-full flex items-center justify-between p-3 rounded border mb-4 transition ${
+    isSmart
+      ? 'bg-blue-950/40 border-blue-600'
+      : 'bg-gray-800 border-gray-700 hover:border-gray-600'
+  }`}
+>
+  <span className="font-medium flex items-center gap-2">
+    ⚡ Smart collection
+  </span>
+  <span className={`text-xs ${isSmart ? 'text-blue-300' : 'text-gray-500'}`}>
+    {isSmart ? 'ON — auto-captures' : 'OFF — manual only'}
+  </span>
+</button>
             {isSmart && (
               <div className="space-y-3 mb-4 p-3 bg-gray-950 rounded border border-gray-800">
                 <div>
