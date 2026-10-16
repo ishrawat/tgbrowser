@@ -79,6 +79,7 @@ export default function Home() {
   const [menuSub, setMenuSub] = useState(false);
   const [menuMoveSub, setMenuMoveSub] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [mounted, setMounted] = useState(false);
   const longPressRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -93,6 +94,7 @@ export default function Home() {
     const t = setTimeout(() => setDebouncedQ(q), 300);
     return () => clearTimeout(t);
   }, [q]);
+  useEffect(() => { setMounted(true); }, []);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -381,8 +383,8 @@ export default function Home() {
 
   const activeData = collections.find(c => c.id === activeCollection);
   const manualCollections = collections.filter(c => !c.is_smart);
-  const grouped = useMemo(() => groupByDate(files), [files]);
-  const useGrouping = sort === 'date_desc' || sort === 'date_asc';
+const grouped = useMemo(() => (mounted ? groupByDate(files) : []), [files, mounted]);
+const useGrouping = mounted && (sort === 'date_desc' || sort === 'date_asc');
 
   const previewIndex = preview ? files.findIndex(f => f.id === preview.id) : -1;
   const canPrev = previewIndex > 0;
