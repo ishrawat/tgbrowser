@@ -32,6 +32,8 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [preview, setPreview] = useState<{ id: number; url: string; mime: string; name: string } | null>(null);
   const [previewCollections, setPreviewCollections] = useState<number[]>([]);
+  const [syncing, setSyncing] = useState(false);
+  const [syncProgress, setSyncProgress] = useState('');
   const [showCreate, setShowCreate] = useState(false);
 
   const [newName, setNewName] = useState('');
@@ -141,6 +143,38 @@ export default function Home() {
     }
   }
 
+  async function sync() {
+    if (!confirm('Check every file against Telegram and remove any that were deleted there? This may take a minute.')) return;
+    setSyncing(true);
+    setSyncProgress('Loading file list...');
+    try {
+      const res = await fetch('/api/files/ids');
+      const all = await res.json();
+      const chunkSize = 20;
+      let removed = 0;
+      for (let i = 0; i < all.length; i += chunkSize) {
+        const chunk = all.slice(i, i + chunkSize);
+        setSyncProgress(`Checking ${i + chunk.length} / ${all.length}...`);
+        const r = await fetch('/api/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ items: chunk }),
+        });
+        if (r.ok) {
+          const data = await r.json();
+          removed += data.removed.length;
+        }
+      }
+      alert(`Checked ${all.length} files. Removed ${removed}.`);
+      load(true);
+    } catch (e) {
+      alert('Sync failed');
+    } finally {
+      setSyncing(false);
+      setSyncProgress('');
+    }
+  }
+
   async function logout() {
     document.cookie = 'auth=; Max-Age=0; path=/';
     window.location.href = '/login';
@@ -210,12 +244,21 @@ export default function Home() {
           )}
         </div>
 
-        <button
-          onClick={logout}
-          className="text-xs text-gray-500 hover:text-white mt-4 text-left px-3"
-        >
-          Logout
-        </button>
+        <div className="mt-4 px-3 flex flex-col gap-2">
+          <button
+            onClick={sync}
+            disabled={syncing}
+            className="text-xs text-gray-500 hover:text-white text-left disabled:opacity-50"
+          >
+            {syncing ? syncProgress || 'Syncing...' : '🔄 Sync with Telegram'}
+          </button>
+          <button
+            onClick={logout}
+            className="text-xs text-gray-500 hover:text-white text-left"
+          >
+            Logout
+          </button>
+        </div>
       </aside>
 
       <main className="flex-1 p-6 overflow-y-auto">
