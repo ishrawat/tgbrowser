@@ -112,18 +112,18 @@ async function open(f: File) {
         )}
       </div>
 
-      {preview && (
-        <div
-          onClick={() => setPreview(null)}
-          className="fixed inset-0 bg-black/90 flex items-center justify-center p-4 z-50"
-        >
-          <div onClick={e => e.stopPropagation()} className="max-w-4xl max-h-full">
+{preview && (
+  <div
+    onClick={() => setPreview(null)}
+    className="fixed inset-0 bg-black flex items-center justify-center p-4 z-50"
+  >
+    <div onClick={e => e.stopPropagation()} className="w-full h-full flex flex-col items-center justify-center">
             {preview.mime.startsWith('image/') ? (
   <img src={preview.url} alt={preview.name} className="max-h-[90vh] rounded" />
 ) : preview.mime === 'application/pdf' ? (
   <iframe
     src={`/api/files/${preview.id}/view`}
-    className="w-[85vw] h-[90vh] bg-white rounded"
+    className="w-full h-[85vh] max-w-5xl bg-white rounded"
   />
 ) : (
   <iframe src={preview.url} className="w-[85vw] h-[90vh] bg-white rounded" />
