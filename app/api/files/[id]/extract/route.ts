@@ -30,7 +30,7 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
 
   try {
     // @ts-ignore
-    const pdfParse = (await import('pdf-parse/lib/pdf-parse.js')).default;
+async function open(f:     const pdfParse = (await import('pdf-parse')).default;File) {
     const parsed = await pdfParse(buffer);
     const text = (parsed.text || '').slice(0, 500000); // cap at 500k chars
     await sql`

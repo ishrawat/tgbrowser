@@ -782,7 +782,7 @@ export default function Home() {
                     onClick={() => runPaletteItem(item)}
                     className={`w-full text-left px-4 py-2 flex items-center gap-3 text-sm ${active ? 'bg-blue-600/30 border-l-2 border-blue-500' : ''}`}
                   >
-                    {item.kind === 'file' ? (
+                                        {item.kind === 'file' ? (
                       <>
                         <span className="text-base">
                           {item.file.mime_type.startsWith('image/') ? '🖼' : item.file.mime_type === 'application/pdf' ? '📄' : item.file.mime_type.startsWith('video/') ? '🎬' : '📎'}
@@ -790,14 +790,13 @@ export default function Home() {
                         <span className="truncate flex-1">{item.file.filename}</span>
                         <span className="text-xs text-gray-500">{formatSize(item.file.size_bytes)}</span>
                       </>
-                    ) : (
+                    ) : item.kind === 'action' ? (
                       <>
                         <span className="text-base">⚡</span>
                         <span className="flex-1">{item.label}</span>
                         {item.hint && <span className="text-xs text-gray-500">{item.hint}</span>}
                       </>
-                    )}
-                  </button>
+                    ) : null}                  </button>
                 );
               })}
             </div>
