@@ -18,6 +18,14 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [preview, setPreview] = useState<{ id: number; url: string; mime: string; name: string } | null>(null);
 
+useEffect(() => {
+  const h = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') setPreview(null);
+  };
+  window.addEventListener('keydown', h);
+  return () => window.removeEventListener('keydown', h);
+}, []);
+
   async function load(reset = false) {
     setLoading(true);
     const p = reset ? 1 : page;
@@ -117,6 +125,13 @@ async function open(f: File) {
     onClick={() => setPreview(null)}
     className="fixed inset-0 bg-black flex items-center justify-center p-4 z-50"
   >
+    <button
+      onClick={(e) => { e.stopPropagation(); setPreview(null); }}
+      className="absolute top-4 right-4 text-white text-3xl leading-none hover:text-red-400 z-10 w-10 h-10 flex items-center justify-center rounded-full bg-black/50 hover:bg-black/80"
+      aria-label="Close"
+    >
+      ×
+    </button>
     <div onClick={e => e.stopPropagation()} className="w-full h-full flex flex-col items-center justify-center">
             {preview.mime.startsWith('image/') ? (
   <img src={preview.url} alt={preview.name} className="max-h-[90vh] rounded" />
